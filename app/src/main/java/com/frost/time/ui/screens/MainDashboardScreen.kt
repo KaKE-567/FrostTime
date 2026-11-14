@@ -4,7 +4,7 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -19,13 +19,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.frost.time.data.TimeRange
 import com.frost.time.data.UiState
 import com.frost.time.ui.components.*
-import com.frost.time.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,43 +38,35 @@ fun MainDashboardScreen(
     val searchQuery by viewModel.searchQuery.collectAsState()
 
     var isSearchActive by remember { mutableStateOf(false) }
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     Scaffold(
-        modifier = modifier.fillMaxSize(),
-        containerColor = OledBlack,
+        modifier = modifier
+            .fillMaxSize()
+            .nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
+            LargeTopAppBar(
                 title = {
                     if (isSearchActive) {
                         TextField(
                             value = searchQuery,
                             onValueChange = { viewModel.onSearchQueryChanged(it) },
-                            placeholder = { Text("Search apps...", color = TextSecondary) },
+                            placeholder = { Text("Search apps...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
                             singleLine = true,
                             colors = TextFieldDefaults.colors(
                                 focusedContainerColor = Color.Transparent,
                                 unfocusedContainerColor = Color.Transparent,
                                 focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary
+                                unfocusedIndicatorColor = Color.Transparent
                             ),
                             modifier = Modifier.fillMaxWidth()
                         )
                     } else {
-                        Column {
-                            Text(
-                                text = "FrostTime",
-                                style = MaterialTheme.typography.titleLarge,
-                                color = TextPrimary,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Bare-Metal Screen Monitor",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = TextSecondary
-                            )
-                        }
+                        Text(
+                            text = "FrostTime",
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 },
                 actions = {
@@ -83,20 +75,22 @@ fun MainDashboardScreen(
                             isSearchActive = false
                             viewModel.onSearchQueryChanged("")
                         }) {
-                            Icon(Icons.Rounded.Close, contentDescription = "Close Search", tint = TextPrimary)
+                            Icon(Icons.Rounded.Close, contentDescription = "Close Search")
                         }
                     } else {
                         IconButton(onClick = { isSearchActive = true }) {
-                            Icon(Icons.Rounded.Search, contentDescription = "Search", tint = TextPrimary)
+                            Icon(Icons.Rounded.Search, contentDescription = "Search")
                         }
                     }
 
                     IconButton(onClick = { viewModel.loadData() }) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = "Refresh", tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.Rounded.Refresh, contentDescription = "Refresh")
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = OledBlack
+                scrollBehavior = scrollBehavior,
+                colors = TopAppBarDefaults.largeTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
                 )
             )
         }
@@ -113,8 +107,8 @@ fun MainDashboardScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         CircularProgressIndicator(
-                            color = MaterialTheme.colorScheme.primary,
-                            strokeWidth = 3.dp
+                            strokeWidth = 3.dp,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
@@ -141,19 +135,18 @@ fun MainDashboardScreen(
                             Icon(
                                 Icons.Rounded.Warning,
                                 contentDescription = null,
-                                tint = FrostRed,
+                                tint = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.size(48.dp)
                             )
                             Text(
                                 text = state.message,
-                                color = TextSecondary,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Button(
-                                onClick = { viewModel.loadData() },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                onClick = { viewModel.loadData() }
                             ) {
-                                Text("Retry", color = MaterialTheme.colorScheme.onPrimary)
+                                Text("Retry")
                             }
                         }
                     }
@@ -173,8 +166,9 @@ fun MainDashboardScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(horizontal = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
+                        // 1. Official Material 3 Segmented Toggle
                         item {
                             TimeRangeSelector(
                                 selectedRange = selectedRange,
@@ -183,49 +177,59 @@ fun MainDashboardScreen(
                             )
                         }
 
+                        // 2. Iconic Multi-segment Screen Time Donut Ring
                         item {
-                            HeroUsageCard(
+                            ScreenTimeRing(
                                 totalScreenTimeMs = data.totalScreenTimeMs,
+                                topApps = data.appList
+                            )
+                        }
+
+                        // 3. Bento Companion Metric Tiles
+                        item {
+                            BentoStatsRow(
                                 unlockCount = data.unlockCount,
                                 sessionCount = data.sessionCount,
-                                mostUsedApp = data.mostUsedApp,
                                 isRootActive = data.isRootActive
                             )
                         }
 
+                        // 4. Hourly Activity Timeline
                         if (data.hourlyBuckets.isNotEmpty()) {
                             item {
                                 HourlyBarChart(hourlyBuckets = data.hourlyBuckets)
                             }
                         }
 
+                        // 5. App Usage Section Header
                         item {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(top = 10.dp, bottom = 4.dp),
+                                    .padding(top = 10.dp, bottom = 2.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "APPS (${filteredApps.size})",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    letterSpacing = 1.sp,
-                                    fontWeight = FontWeight.Bold
+                                    text = "Most Used Apps",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
 
                                 Text(
-                                    text = "Tap for Options",
+                                    text = "${filteredApps.size} apps",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = TextSecondary
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
 
-                        items(filteredApps, key = { it.packageName }) { appItem ->
+                        // 6. Color-Matched App Rows
+                        itemsIndexed(filteredApps, key = { _, it -> it.packageName }) { index, appItem ->
                             AppUsageRow(
                                 item = appItem,
+                                index = index,
                                 isRootActive = data.isRootActive,
                                 onLaunchApp = { viewModel.launchApp(it) },
                                 onToggleFreeze = { pkg, freeze -> viewModel.toggleAppFreeze(pkg, freeze) }
@@ -233,7 +237,7 @@ fun MainDashboardScreen(
                         }
 
                         item {
-                            Spacer(modifier = Modifier.height(28.dp))
+                            Spacer(modifier = Modifier.height(32.dp))
                         }
                     }
                 }
@@ -251,13 +255,15 @@ private fun PermissionRequestScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(28.dp),
+            .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
-        FrostCard(
+        Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(32.dp),
-            backgroundColor = FrostedCard
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
+            )
         ) {
             Column(
                 modifier = Modifier.padding(28.dp),
@@ -268,28 +274,28 @@ private fun PermissionRequestScreen(
                     modifier = Modifier
                         .size(64.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                        .background(MaterialTheme.colorScheme.primaryContainer),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         Icons.Rounded.Security,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.size(32.dp)
                     )
                 }
 
                 Text(
                     text = "Usage Access Required",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = TextPrimary,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.Bold
                 )
 
                 Text(
-                    text = "FrostTime requires access to Android's built-in usage log to display your screen time with 0% idle battery drain.",
+                    text = "FrostTime reads Android's native foreground logs on-demand with 0% idle battery and zero background services.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
 
@@ -299,26 +305,21 @@ private fun PermissionRequestScreen(
                     Button(
                         onClick = onGrantWithRoot,
                         modifier = Modifier.fillMaxWidth(),
-                        shape = CircleShape,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
+                        shape = CircleShape
                     ) {
                         Text(
                             "Auto-Grant with Root (Instant)",
-                            color = MaterialTheme.colorScheme.onPrimary,
                             fontWeight = FontWeight.Bold
                         )
                     }
                 }
 
-                OutlinedButton(
+                FilledTonalButton(
                     onClick = onOpenSettings,
                     modifier = Modifier.fillMaxWidth(),
-                    shape = CircleShape,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, FrostedBorder)
+                    shape = CircleShape
                 ) {
-                    Text("Open System Settings", color = TextPrimary)
+                    Text("Open System Settings")
                 }
             }
         }

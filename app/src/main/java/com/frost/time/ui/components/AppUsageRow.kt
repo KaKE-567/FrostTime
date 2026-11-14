@@ -3,7 +3,6 @@ package com.frost.time.ui.components
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,12 +23,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import com.frost.time.data.AppUsageInfo
-import com.frost.time.ui.theme.*
+import com.frost.time.ui.theme.RingPalette
 import java.util.concurrent.TimeUnit
 
 @Composable
 fun AppUsageRow(
     item: AppUsageInfo,
+    index: Int,
     isRootActive: Boolean,
     onLaunchApp: (String) -> Unit,
     onToggleFreeze: (String, Boolean) -> Unit,
@@ -52,10 +52,19 @@ fun AppUsageRow(
     }
     val percentageInt = (item.percentage * 100).toInt()
 
-    FrostCard(
+    // Assign color consistent with the donut ring
+    val appAccentColor = if (item.isSuspended) {
+        MaterialTheme.colorScheme.tertiary
+    } else {
+        RingPalette[index % RingPalette.size]
+    }
+
+    Card(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        backgroundColor = FrostedCard,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        ),
         onClick = { menuExpanded = true }
     ) {
         Column(
@@ -67,12 +76,12 @@ fun AppUsageRow(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // App Icon in Squircle
+                // App Icon inside squircle container
                 Box(
                     modifier = Modifier
                         .size(46.dp)
-                        .clip(RoundedCornerShape(13.dp))
-                        .background(Color.White.copy(alpha = 0.06f)),
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHighest),
                     contentAlignment = Alignment.Center
                 ) {
                     item.icon?.let {
@@ -84,13 +93,14 @@ fun AppUsageRow(
                     } ?: Text(
                         text = item.appName.take(1).uppercase(),
                         color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium
                     )
                 }
 
                 Spacer(modifier = Modifier.width(14.dp))
 
-                // App Name and Duration
+                // App Name and Package
                 Column(modifier = Modifier.weight(1f)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -98,20 +108,21 @@ fun AppUsageRow(
                     ) {
                         Text(
                             text = item.appName,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = TextPrimary,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
                             modifier = Modifier.weight(1f, fill = false)
                         )
 
                         if (item.isSuspended) {
                             Surface(
-                                color = FrostCyan.copy(alpha = 0.15f),
+                                color = MaterialTheme.colorScheme.tertiaryContainer,
                                 shape = CircleShape
                             ) {
                                 Text(
                                     text = "FROZEN",
-                                    color = FrostCyan,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
@@ -126,7 +137,7 @@ fun AppUsageRow(
                     Text(
                         text = item.packageName,
                         style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1
                     )
                 }
@@ -140,42 +151,43 @@ fun AppUsageRow(
                 ) {
                     Text(
                         text = formattedDuration,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.Bold
                     )
                     Surface(
-                        color = Color.White.copy(alpha = 0.06f),
+                        color = appAccentColor.copy(alpha = 0.15f),
                         shape = CircleShape
                     ) {
                         Text(
                             text = "$percentageInt%",
                             style = MaterialTheme.typography.labelSmall,
-                            color = TextSecondary,
+                            color = appAccentColor,
+                            fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
                         )
                     }
                 }
 
-                // Dropdown Menu
+                // Options Menu
                 Box {
                     IconButton(onClick = { menuExpanded = true }) {
                         Icon(
                             imageVector = Icons.Rounded.MoreVert,
                             contentDescription = "Options",
-                            tint = TextSecondary
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
                     DropdownMenu(
                         expanded = menuExpanded,
                         onDismissRequest = { menuExpanded = false },
-                        modifier = Modifier.background(FrostedCardElevated)
+                        modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest)
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Open App", color = TextPrimary) },
+                            text = { Text("Open App") },
                             leadingIcon = {
-                                Icon(Icons.Rounded.Launch, contentDescription = null, tint = FrostCyan)
+                                Icon(Icons.Rounded.Launch, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                             },
                             onClick = {
                                 menuExpanded = false
@@ -186,9 +198,9 @@ fun AppUsageRow(
                         if (isRootActive) {
                             if (item.isSuspended) {
                                 DropdownMenuItem(
-                                    text = { Text("Unfreeze App (Root)", color = FrostEmerald) },
+                                    text = { Text("Unfreeze App (Root)") },
                                     leadingIcon = {
-                                        Icon(Icons.Rounded.WbSunny, contentDescription = null, tint = FrostEmerald)
+                                        Icon(Icons.Rounded.WbSunny, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
                                     },
                                     onClick = {
                                         menuExpanded = false
@@ -197,9 +209,9 @@ fun AppUsageRow(
                                 )
                             } else {
                                 DropdownMenuItem(
-                                    text = { Text("Freeze App (Root)", color = FrostCyan) },
+                                    text = { Text("Freeze App (Root)") },
                                     leadingIcon = {
-                                        Icon(Icons.Rounded.AcUnit, contentDescription = null, tint = FrostCyan)
+                                        Icon(Icons.Rounded.AcUnit, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
                                     },
                                     onClick = {
                                         menuExpanded = false
@@ -214,15 +226,15 @@ fun AppUsageRow(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Progress Bar
+            // Rounded Progress Indicator matching Ring Color
             LinearProgressIndicator(
                 progress = animatedProgress,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(6.dp)
                     .clip(CircleShape),
-                color = if (item.isSuspended) FrostCyan else MaterialTheme.colorScheme.primary,
-                trackColor = Color.White.copy(alpha = 0.08f)
+                color = appAccentColor,
+                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
             )
         }
     }
