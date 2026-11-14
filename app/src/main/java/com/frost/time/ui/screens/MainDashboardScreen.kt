@@ -183,7 +183,8 @@ fun MainDashboardScreen(
                         item {
                             ScreenTimeRing(
                                 totalScreenTimeMs = data.totalScreenTimeMs,
-                                topApps = data.appList
+                                topApps = data.appList,
+                                rangeTitle = selectedRange.title
                             )
                         }
 

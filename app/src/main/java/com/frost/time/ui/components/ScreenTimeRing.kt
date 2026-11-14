@@ -28,6 +28,7 @@ import java.util.concurrent.TimeUnit
 fun ScreenTimeRing(
     totalScreenTimeMs: Long,
     topApps: List<AppUsageInfo>,
+    rangeTitle: String = "Today",
     modifier: Modifier = Modifier
 ) {
     val hours = TimeUnit.MILLISECONDS.toHours(totalScreenTimeMs)
@@ -152,7 +153,7 @@ fun ScreenTimeRing(
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = "Today",
+                text = rangeTitle,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.outline
             )

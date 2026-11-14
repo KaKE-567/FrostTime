@@ -20,17 +20,11 @@ class UsageRepository(private val context: Context) {
         context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
     private val packageManager = context.packageManager
 
-    /**
-     * Strictly verifies root access. Triggers root manager (Magisk/KSU/APatch) prompt if needed.
-     * Automatically elevates permissions with root.
-     */
     suspend fun checkAndElevateRoot(): Boolean = withContext(Dispatchers.IO) {
         try {
-            // Trigger root shell
             val shell = Shell.getShell()
             if (!shell.isRoot) return@withContext false
 
-            // Auto-grant permissions using root
             Shell.cmd(
                 "pm grant ${context.packageName} android.permission.PACKAGE_USAGE_STATS",
                 "appops set ${context.packageName} GET_USAGE_STATS allow",
@@ -65,27 +59,12 @@ class UsageRepository(private val context: Context) {
     suspend fun fetchDashboardData(timeRange: TimeRange): UsageDashboardData = withContext(Dispatchers.IO) {
         val (startTime, endTime) = getTimeBounds(timeRange)
 
-        // Query aggregate stats
-        val intervalType = when (timeRange) {
-            TimeRange.TODAY, TimeRange.YESTERDAY -> UsageStatsManager.INTERVAL_DAILY
-            TimeRange.WEEK -> UsageStatsManager.INTERVAL_WEEKLY
-        }
+        // Process raw events strictly within [startTime, endTime] with boundary clamping
+        val processed = processEventsForRange(startTime, endTime)
 
-        val statsList = usageStatsManager.queryUsageStats(intervalType, startTime, endTime)
-
-        val aggregatedTimeMap = mutableMapOf<String, Long>()
-        for (stat in statsList) {
-            val current = aggregatedTimeMap.getOrDefault(stat.packageName, 0L)
-            aggregatedTimeMap[stat.packageName] = current + stat.totalTimeInForeground
-        }
-
-        var totalTimeMs = 0L
         val appList = mutableListOf<AppUsageInfo>()
-
-        for ((pkg, timeMs) in aggregatedTimeMap) {
-            // Filter apps with negligible duration (< 30 seconds)
-            if (timeMs < 30_000L) continue
-            if (pkg == context.packageName && timeMs < 60_000L) continue
+        for ((pkg, timeMs) in processed.appDurations) {
+            if (timeMs < 10_000L) continue // Ignore apps under 10 seconds
 
             var appName = pkg
             var isSystem = false
@@ -106,7 +85,6 @@ class UsageRepository(private val context: Context) {
                 }
             } else false
 
-            totalTimeMs += timeMs
             appList.add(
                 AppUsageInfo(
                     packageName = pkg,
@@ -120,6 +98,7 @@ class UsageRepository(private val context: Context) {
             )
         }
 
+        val totalTimeMs = processed.totalTimeMs
         val sortedApps = appList
             .sortedByDescending { it.durationMs }
             .map {
@@ -128,23 +107,188 @@ class UsageRepository(private val context: Context) {
                 )
             }
 
-        val (hourlyList, unlockCount, sessionCount) = computeHourlyAndUnlocks(startTime, endTime)
         val mostUsed = sortedApps.firstOrNull()?.appName ?: "None"
 
         UsageDashboardData(
             totalScreenTimeMs = totalTimeMs,
-            unlockCount = unlockCount,
-            sessionCount = sessionCount,
+            unlockCount = processed.unlockCount,
+            sessionCount = processed.sessionCount,
             mostUsedApp = mostUsed,
-            hourlyBuckets = hourlyList,
+            hourlyBuckets = processed.hourlyBuckets,
             appList = sortedApps,
             isRootActive = true
         )
     }
 
+    private data class ProcessedUsage(
+        val totalTimeMs: Long,
+        val appDurations: Map<String, Long>,
+        val hourlyBuckets: List<HourlyUsage>,
+        val unlockCount: Int,
+        val sessionCount: Int
+    )
+
+    /**
+     * Accurately calculates exact active screen time using UsageEvents.
+     * Prevents Android's INTERVAL_DAILY bucket overlap bug from leaking prior day's usage past midnight.
+     */
+    private fun processEventsForRange(queryStart: Long, queryEnd: Long): ProcessedUsage {
+        val appDurations = mutableMapOf<String, Long>()
+        val hourlyDurations = LongArray(24) { 0L }
+        var keyguardUnlocks = 0
+        var screenInteractiveCount = 0
+        var sessionCount = 0
+
+        // Look back up to 24 hours to catch sessions started before queryStart
+        val lookbackStart = queryStart - 24 * 60 * 60 * 1000L
+        val events = try {
+            usageStatsManager.queryEvents(lookbackStart, queryEnd)
+        } catch (e: Exception) {
+            null
+        }
+
+        if (events != null) {
+            val event = UsageEvents.Event()
+            val activeResumed = mutableMapOf<String, Long>()
+            var isScreenOn = true
+
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event)
+                val pkg = event.packageName ?: continue
+                val timestamp = event.timeStamp
+
+                // Filter self and system internals
+                if (pkg == "android" || pkg == "com.android.systemui" || pkg == context.packageName) {
+                    continue
+                }
+
+                when (event.eventType) {
+                    18 /* KEYGUARD_HIDDEN (Unlock) */ -> {
+                        if (timestamp in queryStart..queryEnd) {
+                            keyguardUnlocks++
+                        }
+                    }
+                    15 /* SCREEN_INTERACTIVE (Screen On) */ -> {
+                        if (timestamp in queryStart..queryEnd) {
+                            screenInteractiveCount++
+                        }
+                        isScreenOn = true
+                    }
+                    16 /* SCREEN_NON_INTERACTIVE (Screen Off) */ -> {
+                        isScreenOn = false
+                        // Pause all active foreground sessions
+                        for ((p, resumedAt) in activeResumed) {
+                            recordSession(p, resumedAt, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
+                        }
+                        activeResumed.clear()
+                    }
+                    UsageEvents.Event.ACTIVITY_RESUMED -> {
+                        if (isScreenOn) {
+                            val prior = activeResumed[pkg]
+                            if (prior != null && timestamp > prior) {
+                                recordSession(pkg, prior, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
+                            }
+                            activeResumed[pkg] = timestamp
+                            if (timestamp in queryStart..queryEnd) {
+                                sessionCount++
+                            }
+                        }
+                    }
+                    UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> {
+                        val resumedAt = activeResumed.remove(pkg)
+                        if (resumedAt != null && timestamp > resumedAt) {
+                            recordSession(pkg, resumedAt, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
+                        }
+                    }
+                }
+            }
+
+            // Close any ongoing active session as of queryEnd
+            if (isScreenOn) {
+                for ((p, resumedAt) in activeResumed) {
+                    if (queryEnd > resumedAt) {
+                        recordSession(p, resumedAt, queryEnd, queryStart, queryEnd, appDurations, hourlyDurations)
+                    }
+                }
+            }
+        }
+
+        var finalUnlocks = if (keyguardUnlocks > 0) keyguardUnlocks else screenInteractiveCount
+        if (finalUnlocks == 0) {
+            try {
+                val out = Shell.cmd("dumpsys power | grep 'mWakefulness=Awake' | wc -l").exec().out
+                val count = out.firstOrNull()?.trim()?.toIntOrNull() ?: 0
+                if (count > 0) finalUnlocks = count
+            } catch (_: Exception) {}
+        }
+
+        // Cap total screen time to the maximum physically elapsed time in this window
+        val maxPossibleDuration = (queryEnd - queryStart).coerceAtLeast(0L)
+        val rawTotal = appDurations.values.sum()
+        val finalTotalTime = minOf(rawTotal, maxPossibleDuration)
+
+        val maxHourly = hourlyDurations.maxOrNull()?.coerceAtLeast(1L) ?: 1L
+        val hourlyList = (0..23).map { h ->
+            HourlyUsage(
+                hour = h,
+                durationMs = hourlyDurations[h],
+                percentage = (hourlyDurations[h].toFloat() / maxHourly.toFloat()).coerceIn(0f, 1f)
+            )
+        }
+
+        return ProcessedUsage(
+            totalTimeMs = finalTotalTime,
+            appDurations = appDurations,
+            hourlyBuckets = hourlyList,
+            unlockCount = finalUnlocks,
+            sessionCount = sessionCount
+        )
+    }
+
+    private fun recordSession(
+        packageName: String,
+        sessionStart: Long,
+        sessionEnd: Long,
+        queryStart: Long,
+        queryEnd: Long,
+        appDurations: MutableMap<String, Long>,
+        hourlyDurations: LongArray
+    ) {
+        val clampedStart = maxOf(sessionStart, queryStart)
+        val clampedEnd = minOf(sessionEnd, queryEnd)
+
+        if (clampedEnd > clampedStart) {
+            val duration = clampedEnd - clampedStart
+            if (duration in 1..86_400_000L) {
+                appDurations[packageName] = (appDurations[packageName] ?: 0L) + duration
+
+                // Distribute across hourly buckets
+                val cal = Calendar.getInstance()
+                var current = clampedStart
+                while (current < clampedEnd) {
+                    cal.timeInMillis = current
+                    val hour = cal.get(Calendar.HOUR_OF_DAY).coerceIn(0, 23)
+
+                    // End of current hour
+                    cal.set(Calendar.MINUTE, 59)
+                    cal.set(Calendar.SECOND, 59)
+                    cal.set(Calendar.MILLISECOND, 999)
+                    val hourEnd = cal.timeInMillis + 1L
+
+                    val chunkEnd = minOf(clampedEnd, hourEnd)
+                    val chunk = chunkEnd - current
+                    if (chunk > 0) {
+                        hourlyDurations[hour] += chunk
+                    }
+                    current = chunkEnd
+                }
+            }
+        }
+    }
+
     private fun getTimeBounds(timeRange: TimeRange): Pair<Long, Long> {
-        val calendar = Calendar.getInstance()
-        val now = calendar.timeInMillis
+        val now = System.currentTimeMillis()
+        val calendar = Calendar.getInstance().apply { timeInMillis = now }
 
         return when (timeRange) {
             TimeRange.TODAY -> {
@@ -178,83 +322,6 @@ class UsageRepository(private val context: Context) {
                 Pair(calendar.timeInMillis, now)
             }
         }
-    }
-
-    private fun computeHourlyAndUnlocks(startTime: Long, endTime: Long): Triple<List<HourlyUsage>, Int, Int> {
-        val hourlyDurations = LongArray(24) { 0L }
-        var keyguardUnlocks = 0
-        var screenInteractiveCount = 0
-        var sessions = 0
-
-        try {
-            val events = usageStatsManager.queryEvents(startTime, endTime)
-            val event = UsageEvents.Event()
-
-            var lastResumedTimestamp = 0L
-            val cal = Calendar.getInstance()
-
-            while (events.hasNextEvent()) {
-                events.getNextEvent(event)
-
-                when (event.eventType) {
-                    18 /* UsageEvents.Event.KEYGUARD_HIDDEN (Unlock) */ -> {
-                        keyguardUnlocks++
-                    }
-                    15 /* UsageEvents.Event.SCREEN_INTERACTIVE (Screen On) */ -> {
-                        screenInteractiveCount++
-                    }
-                    UsageEvents.Event.ACTIVITY_RESUMED -> {
-                        sessions++
-                        lastResumedTimestamp = event.timeStamp
-                    }
-                    UsageEvents.Event.ACTIVITY_PAUSED -> {
-                        if (lastResumedTimestamp > 0 && event.timeStamp > lastResumedTimestamp) {
-                            val duration = event.timeStamp - lastResumedTimestamp
-                            if (duration in 1..86_400_000) {
-                                cal.timeInMillis = event.timeStamp
-                                val hour = cal.get(Calendar.HOUR_OF_DAY).coerceIn(0, 23)
-                                hourlyDurations[hour] += duration
-                            }
-                        }
-                        lastResumedTimestamp = 0L
-                    }
-                }
-            }
-
-            // Account for any active ongoing session that hasn't paused yet
-            if (lastResumedTimestamp > 0 && endTime > lastResumedTimestamp) {
-                val duration = endTime - lastResumedTimestamp
-                if (duration in 1..86_400_000) {
-                    cal.timeInMillis = endTime
-                    val hour = cal.get(Calendar.HOUR_OF_DAY).coerceIn(0, 23)
-                    hourlyDurations[hour] += duration
-                }
-            }
-        } catch (e: Exception) {
-            // Fallback gracefully
-        }
-
-        var unlocks = if (keyguardUnlocks > 0) keyguardUnlocks else screenInteractiveCount
-
-        // Low-level dumpsys power fallback via root
-        if (unlocks == 0) {
-            try {
-                val out = Shell.cmd("dumpsys power | grep 'mWakefulness=Awake' | wc -l").exec().out
-                val count = out.firstOrNull()?.trim()?.toIntOrNull() ?: 0
-                if (count > 0) unlocks = count
-            } catch (_: Exception) {}
-        }
-
-        val maxHourly = hourlyDurations.maxOrNull()?.coerceAtLeast(1L) ?: 1L
-        val hourlyList = (0..23).map { h ->
-            HourlyUsage(
-                hour = h,
-                durationMs = hourlyDurations[h],
-                percentage = (hourlyDurations[h].toFloat() / maxHourly.toFloat()).coerceIn(0f, 1f)
-            )
-        }
-
-        return Triple(hourlyList, unlocks, sessions)
     }
 
     suspend fun freezeApp(packageName: String): Boolean = withContext(Dispatchers.IO) {
