@@ -228,7 +228,6 @@ class UsageRepository(private val context: Context) {
             )
         }
 
-        val maxAllowedTotal = if (isToday) (now - startTime).coerceAtLeast(0L) else 86_400_000L
         val rawTotal = mergedDurations.values.sum()
         val totalTimeMs = minOf(rawTotal, maxAllowedTotal)
 
