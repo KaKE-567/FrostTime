@@ -4,16 +4,16 @@ import android.app.Activity
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
@@ -30,6 +30,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.frost.time.data.DashboardRange
+import com.frost.time.data.RangeType
 import com.frost.time.data.UiState
 import com.frost.time.ui.components.*
 import java.util.Calendar
@@ -42,17 +44,17 @@ fun MainDashboardScreen(
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val selectedDay by viewModel.selectedDay.collectAsState()
+    val selectedRange by viewModel.selectedRange.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
 
     var isSearchActive by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
-    // Material 3 DatePickerDialog to select ANY past date
+    // Material 3 Date Picker Dialog for picking ANY date
     if (showDatePicker) {
-        val initialUtcMillis = remember(selectedDay.timeInMillis) {
-            val localCal = Calendar.getInstance().apply { timeInMillis = selectedDay.timeInMillis }
+        val initialUtcMillis = remember(selectedRange.startTime) {
+            val localCal = Calendar.getInstance().apply { timeInMillis = selectedRange.startTime }
             val y = localCal.get(Calendar.YEAR)
             val m = localCal.get(Calendar.MONTH)
             val d = localCal.get(Calendar.DAY_OF_MONTH)
@@ -89,7 +91,7 @@ fun MainDashboardScreen(
                     onClick = {
                         showDatePicker = false
                         datePickerState.selectedDateMillis?.let { utcMillis ->
-                            viewModel.selectDateFromUtcMillis(utcMillis)
+                            viewModel.selectCustomDateFromUtcMillis(utcMillis)
                         }
                     }
                 ) {
@@ -129,33 +131,17 @@ fun MainDashboardScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
                     } else {
-                        Column(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { showDatePicker = true }
-                                .padding(vertical = 2.dp)
-                        ) {
+                        Column {
                             Text(
                                 text = "FrostTime",
                                 fontWeight = FontWeight.Bold
                             )
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Text(
-                                    text = selectedDay.label,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Icon(
-                                    Icons.Rounded.ArrowDropDown,
-                                    contentDescription = "Select Date",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
+                            Text(
+                                text = selectedRange.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Medium
+                            )
                         }
                     }
                 },
@@ -168,12 +154,11 @@ fun MainDashboardScreen(
                             Icon(Icons.Rounded.Close, contentDescription = "Close Search")
                         }
                     } else {
-                        // Calendar icon button to select any date
                         IconButton(onClick = { showDatePicker = true }) {
                             Icon(
                                 Icons.Rounded.CalendarMonth,
                                 contentDescription = "Select Date",
-                                tint = if (!selectedDay.isToday) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                tint = if (selectedRange.type == RangeType.CUSTOM) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                             )
                         }
 
@@ -182,7 +167,7 @@ fun MainDashboardScreen(
                         }
                     }
 
-                    IconButton(onClick = { viewModel.loadDataForSelectedDay(showLoadingIndicator = true) }) {
+                    IconButton(onClick = { viewModel.loadDataForSelectedRange(showLoadingIndicator = true) }) {
                         Icon(Icons.Rounded.Refresh, contentDescription = "Refresh")
                     }
                 },
@@ -242,7 +227,7 @@ fun MainDashboardScreen(
                                 textAlign = TextAlign.Center
                             )
                             Button(
-                                onClick = { viewModel.loadDataForSelectedDay(showLoadingIndicator = true) }
+                                onClick = { viewModel.loadDataForSelectedRange(showLoadingIndicator = true) }
                             ) {
                                 Text("Retry")
                             }
@@ -266,54 +251,17 @@ fun MainDashboardScreen(
                             .padding(horizontal = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        // Past Date Banner (Only shown when not viewing Today)
-                        if (!selectedDay.isToday) {
-                            item {
-                                Surface(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(16.dp)),
-                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f)
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            Icon(
-                                                Icons.Rounded.History,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Text(
-                                                text = "Viewing: ${selectedDay.label}",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.Medium,
-                                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                                            )
-                                        }
-
-                                        TextButton(
-                                            onClick = { viewModel.selectToday() },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                                        ) {
-                                            Text(
-                                                text = "Reset to Today",
-                                                fontWeight = FontWeight.Bold,
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                    }
-                                }
-                            }
+                        // Dedicated Time Range Space (Today, Yesterday, This Week Total, Current Month, and Calendar Icon)
+                        item {
+                            RangeFilterRow(
+                                selectedRange = selectedRange,
+                                currentMonthName = viewModel.currentMonthName,
+                                onSelectToday = { viewModel.selectToday() },
+                                onSelectYesterday = { viewModel.selectYesterday() },
+                                onSelectThisWeek = { viewModel.selectThisWeek() },
+                                onSelectThisMonth = { viewModel.selectThisMonth() },
+                                onOpenCalendar = { showDatePicker = true }
+                            )
                         }
 
                         // 1. Iconic Multi-segment Screen Time Donut Ring
@@ -321,7 +269,7 @@ fun MainDashboardScreen(
                             ScreenTimeRing(
                                 totalScreenTimeMs = data.totalScreenTimeMs,
                                 topApps = data.appList,
-                                rangeTitle = selectedDay.label
+                                rangeTitle = selectedRange.label
                             )
                         }
 
@@ -382,6 +330,117 @@ fun MainDashboardScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun RangeFilterRow(
+    selectedRange: DashboardRange,
+    currentMonthName: String,
+    onSelectToday: () -> Unit,
+    onSelectYesterday: () -> Unit,
+    onSelectThisWeek: () -> Unit,
+    onSelectThisMonth: () -> Unit,
+    onOpenCalendar: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scrollState = rememberScrollState()
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(scrollState)
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 1. Today
+        TimeFilterChip(
+            selected = selectedRange.type == RangeType.TODAY,
+            text = "Today",
+            onClick = onSelectToday
+        )
+
+        // 2. Yesterday
+        TimeFilterChip(
+            selected = selectedRange.type == RangeType.YESTERDAY,
+            text = "Yesterday",
+            onClick = onSelectYesterday
+        )
+
+        // 3. This Week Total
+        TimeFilterChip(
+            selected = selectedRange.type == RangeType.THIS_WEEK,
+            text = "This Week",
+            onClick = onSelectThisWeek
+        )
+
+        // 4. Current Month
+        TimeFilterChip(
+            selected = selectedRange.type == RangeType.THIS_MONTH,
+            text = currentMonthName,
+            onClick = onSelectThisMonth
+        )
+
+        // 5. Calendar Icon (or Custom Picked Date)
+        val isCustom = (selectedRange.type == RangeType.CUSTOM)
+        Surface(
+            modifier = Modifier
+                .height(38.dp)
+                .clip(CircleShape)
+                .clickable { onOpenCalendar() },
+            shape = CircleShape,
+            color = if (isCustom) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    Icons.Rounded.CalendarMonth,
+                    contentDescription = "Pick Date",
+                    tint = if (isCustom) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+                if (isCustom) {
+                    Text(
+                        text = selectedRange.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimeFilterChip(
+    selected: Boolean,
+    text: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .height(38.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        shape = CircleShape,
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

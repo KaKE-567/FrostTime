@@ -67,6 +67,15 @@ class UsageRepository(private val context: Context) {
         val now = System.currentTimeMillis()
         val effectiveEnd = if (isToday) minOf(now, endTime) else endTime
 
+        val todayCal = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val todayMidnight = todayCal.timeInMillis
+        val isMultiDay = (effectiveEnd - startTime) > (86_400_000L + 60_000L)
+
         // 1. Query System Aggregated UsageStats
         val rawStatsList = try {
             usageStatsManager.queryUsageStats(
@@ -78,36 +87,78 @@ class UsageRepository(private val context: Context) {
             emptyList()
         }
 
-        val calTarget = Calendar.getInstance().apply { timeInMillis = startTime }
-        val targetDay = calTarget.get(Calendar.DAY_OF_YEAR)
-        val targetYear = calTarget.get(Calendar.YEAR)
-
-        val calStat = Calendar.getInstance()
         val systemAppDurations = mutableMapOf<String, Long>()
+        val calStat = Calendar.getInstance()
 
-        for (stat in rawStatsList) {
-            val pkg = stat.packageName ?: continue
-            if (pkg == "android" || pkg == "com.android.systemui" || pkg == context.packageName) continue
+        if (!isMultiDay) {
+            // Single day calculation (Today, Yesterday, or single Custom Date)
+            val calTarget = Calendar.getInstance().apply { timeInMillis = startTime }
+            val targetDay = calTarget.get(Calendar.DAY_OF_YEAR)
+            val targetYear = calTarget.get(Calendar.YEAR)
 
-            val duration = stat.totalTimeInForeground
-            if (duration <= 0) continue
+            for (stat in rawStatsList) {
+                val pkg = stat.packageName ?: continue
+                if (pkg == "android" || pkg == "com.android.systemui" || pkg == context.packageName) continue
 
-            calStat.timeInMillis = stat.firstTimeStamp
-            val sDay = calStat.get(Calendar.DAY_OF_YEAR)
-            val sYear = calStat.get(Calendar.YEAR)
+                val duration = stat.totalTimeInForeground
+                if (duration <= 0) continue
 
-            if (isToday) {
-                if (stat.lastTimeStamp >= startTime && stat.firstTimeStamp >= (startTime - 4 * 3600_000L)) {
-                    val maxElapsed = (now - startTime).coerceAtLeast(0L)
-                    val safeDuration = minOf(duration, maxElapsed)
-                    systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, safeDuration)
+                calStat.timeInMillis = stat.firstTimeStamp
+                val sDay = calStat.get(Calendar.DAY_OF_YEAR)
+                val sYear = calStat.get(Calendar.YEAR)
+
+                if (isToday) {
+                    if (stat.lastTimeStamp >= startTime && stat.firstTimeStamp >= (startTime - 4 * 3600_000L)) {
+                        val maxElapsed = (now - startTime).coerceAtLeast(0L)
+                        val safeDuration = minOf(duration, maxElapsed)
+                        systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, safeDuration)
+                    }
+                } else {
+                    if (sDay == targetDay && sYear == targetYear) {
+                        systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, duration)
+                    } else if (stat.lastTimeStamp in startTime..(effectiveEnd + 4 * 3600_000L) && stat.firstTimeStamp < startTime + 14 * 3600_000L) {
+                        systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, duration)
+                    }
                 }
-            } else {
-                if (sDay == targetDay && sYear == targetYear) {
-                    systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, duration)
-                } else if (stat.lastTimeStamp in startTime..(effectiveEnd + 4 * 3600_000L) && stat.firstTimeStamp < startTime + 14 * 3600_000L) {
-                    systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, duration)
+            }
+        } else {
+            // Multi-day calculation (This Week Total, Current Month Total)
+            val dayBucketsByDate = mutableMapOf<Pair<Int, Int>, MutableMap<String, Long>>()
+
+            for (stat in rawStatsList) {
+                val pkg = stat.packageName ?: continue
+                if (pkg == "android" || pkg == "com.android.systemui" || pkg == context.packageName) continue
+                val duration = stat.totalTimeInForeground
+                if (duration <= 0) continue
+
+                calStat.timeInMillis = stat.firstTimeStamp
+                val sDay = calStat.get(Calendar.DAY_OF_YEAR)
+                val sYear = calStat.get(Calendar.YEAR)
+
+                if (calStat.timeInMillis >= todayMidnight || stat.lastTimeStamp >= todayMidnight) {
+                    val maxElapsedToday = (now - todayMidnight).coerceAtLeast(0L)
+                    val safeDuration = minOf(duration, maxElapsedToday)
+                    val key = Pair(sYear, sDay)
+                    val map = dayBucketsByDate.getOrPut(key) { mutableMapOf() }
+                    map[pkg] = maxOf(map[pkg] ?: 0L, safeDuration)
+                } else if (stat.firstTimeStamp >= (startTime - 6 * 3600_000L) && stat.lastTimeStamp <= (effectiveEnd + 6 * 3600_000L)) {
+                    val key = Pair(sYear, sDay)
+                    val map = dayBucketsByDate.getOrPut(key) { mutableMapOf() }
+                    map[pkg] = maxOf(map[pkg] ?: 0L, minOf(duration, 86_400_000L))
                 }
+            }
+
+            val dayIter = Calendar.getInstance().apply { timeInMillis = startTime }
+            while (dayIter.timeInMillis <= effectiveEnd) {
+                val dYear = dayIter.get(Calendar.YEAR)
+                val dDay = dayIter.get(Calendar.DAY_OF_YEAR)
+                val dayMap = dayBucketsByDate[Pair(dYear, dDay)]
+                if (dayMap != null) {
+                    for ((pkg, dur) in dayMap) {
+                        systemAppDurations[pkg] = (systemAppDurations[pkg] ?: 0L) + dur
+                    }
+                }
+                dayIter.add(Calendar.DAY_OF_YEAR, 1)
             }
         }
 
@@ -118,6 +169,15 @@ class UsageRepository(private val context: Context) {
         val mergedDurations = mutableMapOf<String, Long>()
         val allPackages = systemAppDurations.keys + eventProcessed.appDurations.keys
 
+        val maxAllowedTotal = if (isToday) {
+            (now - startTime).coerceAtLeast(0L)
+        } else if (!isMultiDay) {
+            86_400_000L
+        } else {
+            val elapsedDays = ((effectiveEnd - startTime) / 86_400_000L).coerceAtLeast(1L)
+            elapsedDays * 86_400_000L + (now - todayMidnight).coerceAtLeast(0L)
+        }
+
         for (pkg in allPackages) {
             val systemTime = systemAppDurations[pkg] ?: 0L
             val eventTime = eventProcessed.appDurations[pkg] ?: 0L
@@ -126,7 +186,7 @@ class UsageRepository(private val context: Context) {
                 val maxElapsed = (now - startTime).coerceAtLeast(0L)
                 minOf(maxOf(systemTime, eventTime), maxElapsed)
             } else {
-                minOf(maxOf(systemTime, eventTime), 86_400_000L)
+                minOf(maxOf(systemTime, eventTime), maxAllowedTotal)
             }
 
             if (bestTime >= 10_000L) { // Filter apps under 10 seconds

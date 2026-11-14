@@ -1,7 +1,22 @@
 package com.frost.time.data
 
 import android.graphics.drawable.Drawable
-import java.util.Calendar
+
+enum class RangeType {
+    TODAY,
+    YESTERDAY,
+    THIS_WEEK,
+    THIS_MONTH,
+    CUSTOM
+}
+
+data class DashboardRange(
+    val type: RangeType,
+    val startTime: Long,
+    val endTime: Long,
+    val label: String,
+    val isToday: Boolean = false
+)
 
 data class DayItem(
     val timeInMillis: Long,
