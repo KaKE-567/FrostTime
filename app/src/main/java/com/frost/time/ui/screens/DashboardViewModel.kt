@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
 
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -19,8 +22,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _uiState = MutableStateFlow<UiState>(UiState.Loading)
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    private val _selectedRange = MutableStateFlow(TimeRange.TODAY)
-    val selectedRange: StateFlow<TimeRange> = _selectedRange.asStateFlow()
+    val pastDays: List<DayItem> = generatePastDays(count = 30)
+
+    private val _selectedDay = MutableStateFlow(pastDays.last())
+    val selectedDay: StateFlow<DayItem> = _selectedDay.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -28,17 +33,18 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private var foregroundTickerJob: Job? = null
 
     init {
-        loadData(showLoadingIndicator = true)
+        loadDataForSelectedDay(showLoadingIndicator = true)
     }
 
     fun onResume() {
-        // Refresh immediately upon unlocking/returning to app
-        loadData(showLoadingIndicator = false)
-        startForegroundTicker()
+        // Only live-tick if currently viewing Today
+        if (_selectedDay.value.isToday) {
+            loadDataForSelectedDay(showLoadingIndicator = false)
+            startForegroundTicker()
+        }
     }
 
     fun onPause() {
-        // Halt ticker for 0.0% idle battery
         stopForegroundTicker()
     }
 
@@ -46,8 +52,10 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         stopForegroundTicker()
         foregroundTickerJob = viewModelScope.launch {
             while (isActive) {
-                delay(30_000L) // 30s update while actively viewed
-                loadData(showLoadingIndicator = false)
+                delay(30_000L) // Refresh every 30 seconds while screen is on
+                if (_selectedDay.value.isToday) {
+                    loadDataForSelectedDay(showLoadingIndicator = false)
+                }
             }
         }
     }
@@ -57,31 +65,42 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         foregroundTickerJob = null
     }
 
-    fun onRangeSelected(range: TimeRange) {
-        _selectedRange.value = range
-        loadData(showLoadingIndicator = false)
+    fun onDaySelected(day: DayItem) {
+        _selectedDay.value = day
+        if (day.isToday) {
+            startForegroundTicker()
+        } else {
+            stopForegroundTicker()
+        }
+        loadDataForSelectedDay(showLoadingIndicator = false)
     }
 
     fun onSearchQueryChanged(query: String) {
         _searchQuery.value = query
     }
 
-    fun loadData(showLoadingIndicator: Boolean = false) {
+    fun loadDataForSelectedDay(showLoadingIndicator: Boolean = false) {
         viewModelScope.launch {
             if (showLoadingIndicator || _uiState.value !is UiState.Success) {
                 _uiState.value = UiState.Loading
             }
 
-            // Strictly require Root
             val rootElevated = repository.checkAndElevateRoot()
             if (!rootElevated) {
                 _uiState.value = UiState.RootRequired
                 return@launch
             }
 
-            // Fetch screen stats via root
+            val day = _selectedDay.value
+            val startTime = day.timeInMillis
+            val endTime = if (day.isToday) System.currentTimeMillis() else (day.timeInMillis + 86_400_000L - 1L)
+
             try {
-                val data = repository.fetchDashboardData(_selectedRange.value)
+                val data = repository.fetchDashboardDataForRange(
+                    startTime = startTime,
+                    endTime = endTime,
+                    isToday = day.isToday
+                )
                 _uiState.value = UiState.Success(data)
             } catch (e: Exception) {
                 if (_uiState.value !is UiState.Success) {
@@ -92,7 +111,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun requestRootAccess() {
-        loadData(showLoadingIndicator = true)
+        loadDataForSelectedDay(showLoadingIndicator = true)
     }
 
     fun launchApp(packageName: String) {
@@ -106,12 +125,66 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             } else {
                 repository.unfreezeApp(packageName)
             }
-            loadData(showLoadingIndicator = false)
+            loadDataForSelectedDay(showLoadingIndicator = false)
         }
     }
 
     override fun onCleared() {
         super.onCleared()
         stopForegroundTicker()
+    }
+
+    companion object {
+        private fun generatePastDays(count: Int = 30): List<DayItem> {
+            val list = mutableListOf<DayItem>()
+            val today = Calendar.getInstance()
+            val todayDay = today.get(Calendar.DAY_OF_YEAR)
+            val todayYear = today.get(Calendar.YEAR)
+
+            val yesterday = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
+            val yestDay = yesterday.get(Calendar.DAY_OF_YEAR)
+            val yestYear = yesterday.get(Calendar.YEAR)
+
+            val dayFormat = SimpleDateFormat("EEE", Locale.getDefault())
+            val monthFormat = SimpleDateFormat("MMM", Locale.getDefault())
+
+            for (i in (count - 1) downTo 0) {
+                val cal = Calendar.getInstance().apply {
+                    add(Calendar.DAY_OF_YEAR, -i)
+                    set(Calendar.HOUR_OF_DAY, 0)
+                    set(Calendar.MINUTE, 0)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+
+                val d = cal.get(Calendar.DAY_OF_YEAR)
+                val y = cal.get(Calendar.YEAR)
+                val isToday = (d == todayDay && y == todayYear)
+                val isYesterday = (d == yestDay && y == yestYear)
+
+                val dayOfWeek = dayFormat.format(cal.time)
+                val monthName = monthFormat.format(cal.time)
+                val dayOfMonth = cal.get(Calendar.DAY_OF_MONTH)
+
+                val label = when {
+                    isToday -> "Today"
+                    isYesterday -> "Yesterday"
+                    else -> "$dayOfWeek, $monthName $dayOfMonth"
+                }
+
+                list.add(
+                    DayItem(
+                        timeInMillis = cal.timeInMillis,
+                        dayOfWeek = dayOfWeek,
+                        dayOfMonth = dayOfMonth,
+                        monthName = monthName,
+                        isToday = isToday,
+                        isYesterday = isYesterday,
+                        label = label
+                    )
+                )
+            }
+            return list
+        }
     }
 }

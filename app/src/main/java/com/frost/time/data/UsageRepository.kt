@@ -56,26 +56,34 @@ class UsageRepository(private val context: Context) {
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
-    suspend fun fetchDashboardData(timeRange: TimeRange): UsageDashboardData = withContext(Dispatchers.IO) {
-        val (startTime, endTime) = getTimeBounds(timeRange)
+    /**
+     * Queries usage data for any specific date range (slideable calendar day or custom interval).
+     */
+    suspend fun fetchDashboardDataForRange(
+        startTime: Long,
+        endTime: Long,
+        isToday: Boolean
+    ): UsageDashboardData = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
+        val effectiveEnd = if (isToday) minOf(now, endTime) else endTime
 
-        // 1. Query Android's system_server aggregated UsageStats
-        val intervalType = when (timeRange) {
-            TimeRange.TODAY -> UsageStatsManager.INTERVAL_DAILY
-            TimeRange.YESTERDAY -> UsageStatsManager.INTERVAL_DAILY
-            TimeRange.WEEK -> UsageStatsManager.INTERVAL_WEEKLY
-        }
-
+        // 1. Query System Aggregated UsageStats
         val rawStatsList = try {
-            usageStatsManager.queryUsageStats(intervalType, startTime, endTime) ?: emptyList()
+            usageStatsManager.queryUsageStats(
+                UsageStatsManager.INTERVAL_DAILY,
+                startTime - 12 * 3600_000L,
+                effectiveEnd + 12 * 3600_000L
+            ) ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }
 
-        // Filter system buckets specifically for this time range
+        val calTarget = Calendar.getInstance().apply { timeInMillis = startTime }
+        val targetDay = calTarget.get(Calendar.DAY_OF_YEAR)
+        val targetYear = calTarget.get(Calendar.YEAR)
+
+        val calStat = Calendar.getInstance()
         val systemAppDurations = mutableMapOf<String, Long>()
-        val cal = Calendar.getInstance()
 
         for (stat in rawStatsList) {
             val pkg = stat.packageName ?: continue
@@ -84,42 +92,29 @@ class UsageRepository(private val context: Context) {
             val duration = stat.totalTimeInForeground
             if (duration <= 0) continue
 
-            when (timeRange) {
-                TimeRange.TODAY -> {
-                    // Only accept buckets ending today with first timestamp near or after midnight
-                    if (stat.lastTimeStamp >= startTime && stat.firstTimeStamp >= (startTime - 4 * 3600_000L)) {
-                        val maxElapsed = (now - startTime).coerceAtLeast(0L)
-                        val safeDuration = minOf(duration, maxElapsed)
-                        systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, safeDuration)
-                    }
-                }
-                TimeRange.YESTERDAY -> {
-                    // For yesterday: capture the completed daily bucket
-                    cal.timeInMillis = stat.firstTimeStamp
-                    val statDay = cal.get(Calendar.DAY_OF_YEAR)
-                    val statYear = cal.get(Calendar.YEAR)
+            calStat.timeInMillis = stat.firstTimeStamp
+            val sDay = calStat.get(Calendar.DAY_OF_YEAR)
+            val sYear = calStat.get(Calendar.YEAR)
 
-                    cal.timeInMillis = startTime
-                    val yesterdayDay = cal.get(Calendar.DAY_OF_YEAR)
-                    val yesterdayYear = cal.get(Calendar.YEAR)
-
-                    if (statDay == yesterdayDay && statYear == yesterdayYear) {
-                        systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, duration)
-                    } else if (stat.lastTimeStamp in startTime..(endTime + 4 * 3600_000L) && stat.firstTimeStamp < startTime + 14 * 3600_000L) {
-                        systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, duration)
-                    }
+            if (isToday) {
+                if (stat.lastTimeStamp >= startTime && stat.firstTimeStamp >= (startTime - 4 * 3600_000L)) {
+                    val maxElapsed = (now - startTime).coerceAtLeast(0L)
+                    val safeDuration = minOf(duration, maxElapsed)
+                    systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, safeDuration)
                 }
-                TimeRange.WEEK -> {
-                    systemAppDurations[pkg] = (systemAppDurations[pkg] ?: 0L) + duration
+            } else {
+                if (sDay == targetDay && sYear == targetYear) {
+                    systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, duration)
+                } else if (stat.lastTimeStamp in startTime..(effectiveEnd + 4 * 3600_000L) && stat.firstTimeStamp < startTime + 14 * 3600_000L) {
+                    systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, duration)
                 }
             }
         }
 
-        // 2. Process granular events for unlocks, pickups, hourly distribution & event sessions
-        val eventProcessed = processEventsForRange(startTime, endTime)
+        // 2. Process granular UsageEvents for timeline, unlocks & session transitions
+        val eventProcessed = processEventsForRange(startTime, effectiveEnd)
 
-        // 3. Merge system_server hardware/kernel tracked times with event times
-        // Captures full-screen immersive games (like BGMI 4-5h) that may drop paused events
+        // 3. Merge system totals with event totals
         val mergedDurations = mutableMapOf<String, Long>()
         val allPackages = systemAppDurations.keys + eventProcessed.appDurations.keys
 
@@ -127,25 +122,18 @@ class UsageRepository(private val context: Context) {
             val systemTime = systemAppDurations[pkg] ?: 0L
             val eventTime = eventProcessed.appDurations[pkg] ?: 0L
 
-            val bestTime = when (timeRange) {
-                TimeRange.TODAY -> {
-                    val maxElapsed = (now - startTime).coerceAtLeast(0L)
-                    minOf(maxOf(systemTime, eventTime), maxElapsed)
-                }
-                TimeRange.YESTERDAY -> {
-                    minOf(maxOf(systemTime, eventTime), 86_400_000L)
-                }
-                TimeRange.WEEK -> {
-                    maxOf(systemTime, eventTime)
-                }
+            val bestTime = if (isToday) {
+                val maxElapsed = (now - startTime).coerceAtLeast(0L)
+                minOf(maxOf(systemTime, eventTime), maxElapsed)
+            } else {
+                minOf(maxOf(systemTime, eventTime), 86_400_000L)
             }
 
-            if (bestTime >= 10_000L) { // At least 10 seconds
+            if (bestTime >= 10_000L) { // Filter apps under 10 seconds
                 mergedDurations[pkg] = bestTime
             }
         }
 
-        // Build UI model
         val appList = mutableListOf<AppUsageInfo>()
         for ((pkg, timeMs) in mergedDurations) {
             var appName = pkg
@@ -180,12 +168,7 @@ class UsageRepository(private val context: Context) {
             )
         }
 
-        val maxAllowedTotal = when (timeRange) {
-            TimeRange.TODAY -> (now - startTime).coerceAtLeast(0L)
-            TimeRange.YESTERDAY -> 86_400_000L
-            TimeRange.WEEK -> 7 * 86_400_000L
-        }
-
+        val maxAllowedTotal = if (isToday) (now - startTime).coerceAtLeast(0L) else 86_400_000L
         val rawTotal = mergedDurations.values.sum()
         val totalTimeMs = minOf(rawTotal, maxAllowedTotal)
 
@@ -210,6 +193,12 @@ class UsageRepository(private val context: Context) {
         )
     }
 
+    suspend fun fetchDashboardData(timeRange: TimeRange): UsageDashboardData = withContext(Dispatchers.IO) {
+        val (startTime, endTime) = getTimeBounds(timeRange)
+        val isToday = (timeRange == TimeRange.TODAY)
+        fetchDashboardDataForRange(startTime, endTime, isToday)
+    }
+
     private data class ProcessedUsage(
         val totalTimeMs: Long,
         val appDurations: Map<String, Long>,
@@ -225,7 +214,7 @@ class UsageRepository(private val context: Context) {
         var screenInteractiveCount = 0
         var sessionCount = 0
 
-        // Look back 24 hours to catch sessions started before queryStart
+        // Look back up to 24 hours to catch sessions started before queryStart
         val lookbackStart = queryStart - 24 * 60 * 60 * 1000L
         val events = try {
             usageStatsManager.queryEvents(lookbackStart, queryEnd)
@@ -259,7 +248,6 @@ class UsageRepository(private val context: Context) {
                         continue
                     }
                     16 /* SCREEN_NON_INTERACTIVE (Screen Turned Off) */ -> {
-                        // Pause currently active foreground app
                         currentForegroundPkg?.let { activePkg ->
                             if (timestamp > currentForegroundStart) {
                                 recordSession(activePkg, currentForegroundStart, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
@@ -278,7 +266,6 @@ class UsageRepository(private val context: Context) {
                 // 3. Process App Transitions
                 when (eventType) {
                     UsageEvents.Event.ACTIVITY_RESUMED -> {
-                        // If another app was running, close it first
                         currentForegroundPkg?.let { activePkg ->
                             if (timestamp > currentForegroundStart) {
                                 recordSession(activePkg, currentForegroundStart, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
@@ -357,7 +344,6 @@ class UsageRepository(private val context: Context) {
             if (duration in 1..86_400_000L) {
                 appDurations[packageName] = (appDurations[packageName] ?: 0L) + duration
 
-                // Distribute across hourly buckets
                 val cal = Calendar.getInstance()
                 var current = clampedStart
                 while (current < clampedEnd) {

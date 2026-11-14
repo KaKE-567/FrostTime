@@ -2,7 +2,6 @@ package com.frost.time.ui.screens
 
 import android.app.Activity
 import androidx.compose.animation.*
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -26,7 +25,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.frost.time.data.TimeRange
 import com.frost.time.data.UiState
 import com.frost.time.ui.components.*
 
@@ -37,7 +35,7 @@ fun MainDashboardScreen(
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val selectedRange by viewModel.selectedRange.collectAsState()
+    val selectedDay by viewModel.selectedDay.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
 
     var isSearchActive by remember { mutableStateOf(false) }
@@ -66,10 +64,17 @@ fun MainDashboardScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
                     } else {
-                        Text(
-                            text = "FrostTime",
-                            fontWeight = FontWeight.Bold
-                        )
+                        Column {
+                            Text(
+                                text = "FrostTime",
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = selectedDay.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 },
                 actions = {
@@ -86,7 +91,7 @@ fun MainDashboardScreen(
                         }
                     }
 
-                    IconButton(onClick = { viewModel.loadData(showLoadingIndicator = true) }) {
+                    IconButton(onClick = { viewModel.loadDataForSelectedDay(showLoadingIndicator = true) }) {
                         Icon(Icons.Rounded.Refresh, contentDescription = "Refresh")
                     }
                 },
@@ -146,7 +151,7 @@ fun MainDashboardScreen(
                                 textAlign = TextAlign.Center
                             )
                             Button(
-                                onClick = { viewModel.loadData(showLoadingIndicator = true) }
+                                onClick = { viewModel.loadDataForSelectedDay(showLoadingIndicator = true) }
                             ) {
                                 Text("Retry")
                             }
@@ -170,11 +175,12 @@ fun MainDashboardScreen(
                             .padding(horizontal = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        // 1. Official Material 3 Segmented Toggle
+                        // 1. Slideable 30-Day Calendar Strip
                         item {
-                            TimeRangeSelector(
-                                selectedRange = selectedRange,
-                                onRangeSelected = { viewModel.onRangeSelected(it) },
+                            CalendarDateStrip(
+                                days = viewModel.pastDays,
+                                selectedDay = selectedDay,
+                                onDaySelected = { viewModel.onDaySelected(it) },
                                 modifier = Modifier.padding(vertical = 4.dp)
                             )
                         }
@@ -184,7 +190,7 @@ fun MainDashboardScreen(
                             ScreenTimeRing(
                                 totalScreenTimeMs = data.totalScreenTimeMs,
                                 topApps = data.appList,
-                                rangeTitle = selectedRange.title
+                                rangeTitle = selectedDay.label
                             )
                         }
 

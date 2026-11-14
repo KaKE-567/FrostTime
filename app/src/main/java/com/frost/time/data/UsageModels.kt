@@ -1,6 +1,17 @@
 package com.frost.time.data
 
 import android.graphics.drawable.Drawable
+import java.util.Calendar
+
+data class DayItem(
+    val timeInMillis: Long,
+    val dayOfWeek: String,
+    val dayOfMonth: Int,
+    val monthName: String,
+    val isToday: Boolean,
+    val isYesterday: Boolean,
+    val label: String
+)
 
 enum class TimeRange(val title: String) {
     TODAY("Today"),
