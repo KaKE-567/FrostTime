@@ -1,8 +1,6 @@
 package com.frost.time.ui.screens
 
 import android.app.Application
-import android.content.Intent
-import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.frost.time.data.*
@@ -34,13 +32,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun onResume() {
-        // Refresh immediately upon unlocking/returning to app without full screen loading flicker
+        // Refresh immediately upon unlocking/returning to app
         loadData(showLoadingIndicator = false)
         startForegroundTicker()
     }
 
     fun onPause() {
-        // Immediately halt background ticking for 0.0% battery drain
+        // Halt ticker for 0.0% idle battery
         stopForegroundTicker()
     }
 
@@ -48,7 +46,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         stopForegroundTicker()
         foregroundTickerJob = viewModelScope.launch {
             while (isActive) {
-                delay(30_000L) // Refresh screen time every 30 seconds while screen is actively on
+                delay(30_000L) // 30s update while actively viewed
                 loadData(showLoadingIndicator = false)
             }
         }
@@ -74,50 +72,27 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 _uiState.value = UiState.Loading
             }
 
-            // 1. Verify permissions
-            if (!repository.isPermissionGranted()) {
-                val hasRoot = repository.isRootAvailable()
-                if (hasRoot) {
-                    val granted = repository.grantPermissionsWithRoot()
-                    if (!granted) {
-                        _uiState.value = UiState.NeedPermission(isRootAvailable = true)
-                        return@launch
-                    }
-                } else {
-                    _uiState.value = UiState.NeedPermission(isRootAvailable = false)
-                    return@launch
-                }
+            // Strictly require Root
+            val rootElevated = repository.checkAndElevateRoot()
+            if (!rootElevated) {
+                _uiState.value = UiState.RootRequired
+                return@launch
             }
 
-            // 2. Fetch screen time stats on-demand
+            // Fetch screen stats via root
             try {
                 val data = repository.fetchDashboardData(_selectedRange.value)
                 _uiState.value = UiState.Success(data)
             } catch (e: Exception) {
                 if (_uiState.value !is UiState.Success) {
-                    _uiState.value = UiState.Error(e.message ?: "Failed to query usage stats")
+                    _uiState.value = UiState.Error(e.message ?: "Failed to read screen stats via root")
                 }
             }
         }
     }
 
-    fun requestRootGrant() {
-        viewModelScope.launch {
-            _uiState.value = UiState.Loading
-            val success = repository.grantPermissionsWithRoot()
-            if (success) {
-                loadData(showLoadingIndicator = false)
-            } else {
-                _uiState.value = UiState.NeedPermission(isRootAvailable = repository.isRootAvailable())
-            }
-        }
-    }
-
-    fun openSettings() {
-        val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        getApplication<Application>().startActivity(intent)
+    fun requestRootAccess() {
+        loadData(showLoadingIndicator = true)
     }
 
     fun launchApp(packageName: String) {

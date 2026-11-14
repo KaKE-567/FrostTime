@@ -22,7 +22,7 @@ import androidx.compose.ui.unit.sp
 fun BentoStatsRow(
     unlockCount: Int,
     sessionCount: Int,
-    isRootActive: Boolean,
+    isRootActive: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -51,7 +51,7 @@ fun BentoStatsRow(
             )
         }
 
-        // Engine Status Banner Card (MIUIX style)
+        // Engine Status Banner Card (Root Only)
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(20.dp),
@@ -74,31 +74,26 @@ fun BentoStatsRow(
                         modifier = Modifier
                             .size(32.dp)
                             .clip(CircleShape)
-                            .background(
-                                if (isRootActive) MaterialTheme.colorScheme.primaryContainer
-                                else MaterialTheme.colorScheme.secondaryContainer
-                            ),
+                            .background(MaterialTheme.colorScheme.primaryContainer),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Bolt,
                             contentDescription = null,
-                            tint = if (isRootActive) MaterialTheme.colorScheme.onPrimaryContainer
-                                   else MaterialTheme.colorScheme.onSecondaryContainer,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(18.dp)
                         )
                     }
 
                     Column {
                         Text(
-                            text = if (isRootActive) "Zero Idle Drain Active" else "Standard Engine",
+                            text = "Bare-Metal Root Engine",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = if (isRootActive) "No background services · 0.0% battery"
-                                   else "Operating with framework usage stats",
+                            text = "Zero background drain · 0.0% battery",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -106,16 +101,14 @@ fun BentoStatsRow(
                 }
 
                 Surface(
-                    color = if (isRootActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                            else MaterialTheme.colorScheme.outlineVariant,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
                     shape = CircleShape
                 ) {
                     Text(
-                        text = if (isRootActive) "ROOT" else "OFFLINE",
+                        text = "ROOT ONLY",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
-                        color = if (isRootActive) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.primary,
                         fontSize = 10.sp,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                     )

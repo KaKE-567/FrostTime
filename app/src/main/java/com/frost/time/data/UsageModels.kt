@@ -31,12 +31,12 @@ data class UsageDashboardData(
     val mostUsedApp: String,
     val hourlyBuckets: List<HourlyUsage>,
     val appList: List<AppUsageInfo>,
-    val isRootActive: Boolean
+    val isRootActive: Boolean = true
 )
 
 sealed interface UiState {
     data object Loading : UiState
+    data object RootRequired : UiState
     data class Success(val data: UsageDashboardData) : UiState
-    data class NeedPermission(val isRootAvailable: Boolean) : UiState
     data class Error(val message: String) : UiState
 }

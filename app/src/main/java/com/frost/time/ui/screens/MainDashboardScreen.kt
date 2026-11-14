@@ -1,5 +1,6 @@
 package com.frost.time.ui.screens
 
+import android.app.Activity
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -20,7 +21,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.frost.time.data.TimeRange
@@ -83,7 +86,7 @@ fun MainDashboardScreen(
                         }
                     }
 
-                    IconButton(onClick = { viewModel.loadData() }) {
+                    IconButton(onClick = { viewModel.loadData(showLoadingIndicator = true) }) {
                         Icon(Icons.Rounded.Refresh, contentDescription = "Refresh")
                     }
                 },
@@ -113,11 +116,9 @@ fun MainDashboardScreen(
                     }
                 }
 
-                is UiState.NeedPermission -> {
-                    PermissionRequestScreen(
-                        isRootAvailable = state.isRootAvailable,
-                        onGrantWithRoot = { viewModel.requestRootGrant() },
-                        onOpenSettings = { viewModel.openSettings() }
+                is UiState.RootRequired -> {
+                    RootRequiredScreen(
+                        onGrantRoot = { viewModel.requestRootAccess() }
                     )
                 }
 
@@ -141,10 +142,11 @@ fun MainDashboardScreen(
                             Text(
                                 text = state.message,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodyLarge
+                                style = MaterialTheme.typography.bodyLarge,
+                                textAlign = TextAlign.Center
                             )
                             Button(
-                                onClick = { viewModel.loadData() }
+                                onClick = { viewModel.loadData(showLoadingIndicator = true) }
                             ) {
                                 Text("Retry")
                             }
@@ -190,7 +192,7 @@ fun MainDashboardScreen(
                             BentoStatsRow(
                                 unlockCount = data.unlockCount,
                                 sessionCount = data.sessionCount,
-                                isRootActive = data.isRootActive
+                                isRootActive = true
                             )
                         }
 
@@ -230,7 +232,7 @@ fun MainDashboardScreen(
                             AppUsageRow(
                                 item = appItem,
                                 index = index,
-                                isRootActive = data.isRootActive,
+                                isRootActive = true,
                                 onLaunchApp = { viewModel.launchApp(it) },
                                 onToggleFreeze = { pkg, freeze -> viewModel.toggleAppFreeze(pkg, freeze) }
                             )
@@ -247,11 +249,11 @@ fun MainDashboardScreen(
 }
 
 @Composable
-private fun PermissionRequestScreen(
-    isRootAvailable: Boolean,
-    onGrantWithRoot: () -> Unit,
-    onOpenSettings: () -> Unit
+private fun RootRequiredScreen(
+    onGrantRoot: () -> Unit
 ) {
+    val context = LocalContext.current
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -286,40 +288,40 @@ private fun PermissionRequestScreen(
                 }
 
                 Text(
-                    text = "Usage Access Required",
+                    text = "Root Access Required",
                     style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.Bold
                 )
 
                 Text(
-                    text = "FrostTime reads Android's native foreground logs on-demand with 0% idle battery and zero background services.",
+                    text = "FrostTime is built strictly for rooted devices (Magisk, KernelSU, APatch) to eliminate background polling services and ensure 0.0% battery drain.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    textAlign = TextAlign.Center
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                if (isRootAvailable) {
-                    Button(
-                        onClick = onGrantWithRoot,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = CircleShape
-                    ) {
-                        Text(
-                            "Auto-Grant with Root (Instant)",
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                FilledTonalButton(
-                    onClick = onOpenSettings,
+                Button(
+                    onClick = onGrantRoot,
                     modifier = Modifier.fillMaxWidth(),
                     shape = CircleShape
                 ) {
-                    Text("Open System Settings")
+                    Text(
+                        "Grant Superuser Access",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                FilledTonalButton(
+                    onClick = {
+                        (context as? Activity)?.finish()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = CircleShape
+                ) {
+                    Text("Exit App")
                 }
             }
         }

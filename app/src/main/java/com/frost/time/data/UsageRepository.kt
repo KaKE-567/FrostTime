@@ -20,6 +20,29 @@ class UsageRepository(private val context: Context) {
         context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
     private val packageManager = context.packageManager
 
+    /**
+     * Strictly verifies root access. Triggers root manager (Magisk/KSU/APatch) prompt if needed.
+     * Automatically elevates permissions with root.
+     */
+    suspend fun checkAndElevateRoot(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            // Trigger root shell
+            val shell = Shell.getShell()
+            if (!shell.isRoot) return@withContext false
+
+            // Auto-grant permissions using root
+            Shell.cmd(
+                "pm grant ${context.packageName} android.permission.PACKAGE_USAGE_STATS",
+                "appops set ${context.packageName} GET_USAGE_STATS allow",
+                "pm grant ${context.packageName} android.permission.DUMP"
+            ).exec()
+
+            isPermissionGranted()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     fun isPermissionGranted(): Boolean {
         val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
         val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -39,30 +62,10 @@ class UsageRepository(private val context: Context) {
         return mode == AppOpsManager.MODE_ALLOWED
     }
 
-    fun isRootAvailable(): Boolean {
-        return try {
-            Shell.isAppGrantedRoot() == true || Shell.getShell().isRoot
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    suspend fun grantPermissionsWithRoot(): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val result = Shell.cmd(
-                "pm grant ${context.packageName} android.permission.PACKAGE_USAGE_STATS",
-                "appops set ${context.packageName} GET_USAGE_STATS allow"
-            ).exec()
-            result.isSuccess && isPermissionGranted()
-        } catch (e: Exception) {
-            false
-        }
-    }
-
     suspend fun fetchDashboardData(timeRange: TimeRange): UsageDashboardData = withContext(Dispatchers.IO) {
         val (startTime, endTime) = getTimeBounds(timeRange)
 
-        // 1. Query aggregate stats
+        // Query aggregate stats
         val intervalType = when (timeRange) {
             TimeRange.TODAY, TimeRange.YESTERDAY -> UsageStatsManager.INTERVAL_DAILY
             TimeRange.WEEK -> UsageStatsManager.INTERVAL_WEEKLY
@@ -70,7 +73,6 @@ class UsageRepository(private val context: Context) {
 
         val statsList = usageStatsManager.queryUsageStats(intervalType, startTime, endTime)
 
-        // Merge duplicate package entries if any
         val aggregatedTimeMap = mutableMapOf<String, Long>()
         for (stat in statsList) {
             val current = aggregatedTimeMap.getOrDefault(stat.packageName, 0L)
@@ -81,10 +83,8 @@ class UsageRepository(private val context: Context) {
         val appList = mutableListOf<AppUsageInfo>()
 
         for ((pkg, timeMs) in aggregatedTimeMap) {
-            // Ignore apps with less than 30 seconds of screen time
+            // Filter apps with negligible duration (< 30 seconds)
             if (timeMs < 30_000L) continue
-
-            // Don't show system launchers or self if time is negligible
             if (pkg == context.packageName && timeMs < 60_000L) continue
 
             var appName = pkg
@@ -120,7 +120,6 @@ class UsageRepository(private val context: Context) {
             )
         }
 
-        // Sort by duration descending and calculate percentage
         val sortedApps = appList
             .sortedByDescending { it.durationMs }
             .map {
@@ -129,11 +128,8 @@ class UsageRepository(private val context: Context) {
                 )
             }
 
-        // 2. Compute hourly buckets and unlock sessions from UsageEvents
         val (hourlyList, unlockCount, sessionCount) = computeHourlyAndUnlocks(startTime, endTime)
-
         val mostUsed = sortedApps.firstOrNull()?.appName ?: "None"
-        val rootActive = isRootAvailable()
 
         UsageDashboardData(
             totalScreenTimeMs = totalTimeMs,
@@ -142,7 +138,7 @@ class UsageRepository(private val context: Context) {
             mostUsedApp = mostUsed,
             hourlyBuckets = hourlyList,
             appList = sortedApps,
-            isRootActive = rootActive
+            isRootActive = true
         )
     }
 
@@ -240,8 +236,8 @@ class UsageRepository(private val context: Context) {
 
         var unlocks = if (keyguardUnlocks > 0) keyguardUnlocks else screenInteractiveCount
 
-        // Try getting unlock count from root if events returned zero
-        if (unlocks == 0 && isRootAvailable()) {
+        // Low-level dumpsys power fallback via root
+        if (unlocks == 0) {
             try {
                 val out = Shell.cmd("dumpsys power | grep 'mWakefulness=Awake' | wc -l").exec().out
                 val count = out.firstOrNull()?.trim()?.toIntOrNull() ?: 0
@@ -262,7 +258,6 @@ class UsageRepository(private val context: Context) {
     }
 
     suspend fun freezeApp(packageName: String): Boolean = withContext(Dispatchers.IO) {
-        if (!isRootAvailable()) return@withContext false
         val cmd = Shell.cmd(
             "pm suspend $packageName",
             "am force-stop $packageName"
@@ -271,7 +266,6 @@ class UsageRepository(private val context: Context) {
     }
 
     suspend fun unfreezeApp(packageName: String): Boolean = withContext(Dispatchers.IO) {
-        if (!isRootAvailable()) return@withContext false
         val cmd = Shell.cmd("pm unsuspend $packageName").exec()
         cmd.isSuccess
     }
