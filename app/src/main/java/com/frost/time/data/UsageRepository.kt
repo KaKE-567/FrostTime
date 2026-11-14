@@ -58,14 +58,96 @@ class UsageRepository(private val context: Context) {
 
     suspend fun fetchDashboardData(timeRange: TimeRange): UsageDashboardData = withContext(Dispatchers.IO) {
         val (startTime, endTime) = getTimeBounds(timeRange)
+        val now = System.currentTimeMillis()
 
-        // Process raw events strictly within [startTime, endTime] with boundary clamping
-        val processed = processEventsForRange(startTime, endTime)
+        // 1. Query Android's system_server aggregated UsageStats
+        val intervalType = when (timeRange) {
+            TimeRange.TODAY -> UsageStatsManager.INTERVAL_DAILY
+            TimeRange.YESTERDAY -> UsageStatsManager.INTERVAL_DAILY
+            TimeRange.WEEK -> UsageStatsManager.INTERVAL_WEEKLY
+        }
 
+        val rawStatsList = try {
+            usageStatsManager.queryUsageStats(intervalType, startTime, endTime) ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        // Filter system buckets specifically for this time range
+        val systemAppDurations = mutableMapOf<String, Long>()
+        val cal = Calendar.getInstance()
+
+        for (stat in rawStatsList) {
+            val pkg = stat.packageName ?: continue
+            if (pkg == "android" || pkg == "com.android.systemui" || pkg == context.packageName) continue
+
+            val duration = stat.totalTimeInForeground
+            if (duration <= 0) continue
+
+            when (timeRange) {
+                TimeRange.TODAY -> {
+                    // Only accept buckets ending today with first timestamp near or after midnight
+                    if (stat.lastTimeStamp >= startTime && stat.firstTimeStamp >= (startTime - 4 * 3600_000L)) {
+                        val maxElapsed = (now - startTime).coerceAtLeast(0L)
+                        val safeDuration = minOf(duration, maxElapsed)
+                        systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, safeDuration)
+                    }
+                }
+                TimeRange.YESTERDAY -> {
+                    // For yesterday: capture the completed daily bucket
+                    cal.timeInMillis = stat.firstTimeStamp
+                    val statDay = cal.get(Calendar.DAY_OF_YEAR)
+                    val statYear = cal.get(Calendar.YEAR)
+
+                    cal.timeInMillis = startTime
+                    val yesterdayDay = cal.get(Calendar.DAY_OF_YEAR)
+                    val yesterdayYear = cal.get(Calendar.YEAR)
+
+                    if (statDay == yesterdayDay && statYear == yesterdayYear) {
+                        systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, duration)
+                    } else if (stat.lastTimeStamp in startTime..(endTime + 4 * 3600_000L) && stat.firstTimeStamp < startTime + 14 * 3600_000L) {
+                        systemAppDurations[pkg] = maxOf(systemAppDurations[pkg] ?: 0L, duration)
+                    }
+                }
+                TimeRange.WEEK -> {
+                    systemAppDurations[pkg] = (systemAppDurations[pkg] ?: 0L) + duration
+                }
+            }
+        }
+
+        // 2. Process granular events for unlocks, pickups, hourly distribution & event sessions
+        val eventProcessed = processEventsForRange(startTime, endTime)
+
+        // 3. Merge system_server hardware/kernel tracked times with event times
+        // Captures full-screen immersive games (like BGMI 4-5h) that may drop paused events
+        val mergedDurations = mutableMapOf<String, Long>()
+        val allPackages = systemAppDurations.keys + eventProcessed.appDurations.keys
+
+        for (pkg in allPackages) {
+            val systemTime = systemAppDurations[pkg] ?: 0L
+            val eventTime = eventProcessed.appDurations[pkg] ?: 0L
+
+            val bestTime = when (timeRange) {
+                TimeRange.TODAY -> {
+                    val maxElapsed = (now - startTime).coerceAtLeast(0L)
+                    minOf(maxOf(systemTime, eventTime), maxElapsed)
+                }
+                TimeRange.YESTERDAY -> {
+                    minOf(maxOf(systemTime, eventTime), 86_400_000L)
+                }
+                TimeRange.WEEK -> {
+                    maxOf(systemTime, eventTime)
+                }
+            }
+
+            if (bestTime >= 10_000L) { // At least 10 seconds
+                mergedDurations[pkg] = bestTime
+            }
+        }
+
+        // Build UI model
         val appList = mutableListOf<AppUsageInfo>()
-        for ((pkg, timeMs) in processed.appDurations) {
-            if (timeMs < 10_000L) continue // Ignore apps under 10 seconds
-
+        for ((pkg, timeMs) in mergedDurations) {
             var appName = pkg
             var isSystem = false
             val icon = try {
@@ -98,7 +180,15 @@ class UsageRepository(private val context: Context) {
             )
         }
 
-        val totalTimeMs = processed.totalTimeMs
+        val maxAllowedTotal = when (timeRange) {
+            TimeRange.TODAY -> (now - startTime).coerceAtLeast(0L)
+            TimeRange.YESTERDAY -> 86_400_000L
+            TimeRange.WEEK -> 7 * 86_400_000L
+        }
+
+        val rawTotal = mergedDurations.values.sum()
+        val totalTimeMs = minOf(rawTotal, maxAllowedTotal)
+
         val sortedApps = appList
             .sortedByDescending { it.durationMs }
             .map {
@@ -111,10 +201,10 @@ class UsageRepository(private val context: Context) {
 
         UsageDashboardData(
             totalScreenTimeMs = totalTimeMs,
-            unlockCount = processed.unlockCount,
-            sessionCount = processed.sessionCount,
+            unlockCount = eventProcessed.unlockCount,
+            sessionCount = eventProcessed.sessionCount,
             mostUsedApp = mostUsed,
-            hourlyBuckets = processed.hourlyBuckets,
+            hourlyBuckets = eventProcessed.hourlyBuckets,
             appList = sortedApps,
             isRootActive = true
         )
@@ -128,10 +218,6 @@ class UsageRepository(private val context: Context) {
         val sessionCount: Int
     )
 
-    /**
-     * Accurately calculates exact active screen time using UsageEvents.
-     * Prevents Android's INTERVAL_DAILY bucket overlap bug from leaking prior day's usage past midnight.
-     */
     private fun processEventsForRange(queryStart: Long, queryEnd: Long): ProcessedUsage {
         val appDurations = mutableMapOf<String, Long>()
         val hourlyDurations = LongArray(24) { 0L }
@@ -139,7 +225,7 @@ class UsageRepository(private val context: Context) {
         var screenInteractiveCount = 0
         var sessionCount = 0
 
-        // Look back up to 24 hours to catch sessions started before queryStart
+        // Look back 24 hours to catch sessions started before queryStart
         val lookbackStart = queryStart - 24 * 60 * 60 * 1000L
         val events = try {
             usageStatsManager.queryEvents(lookbackStart, queryEnd)
@@ -149,8 +235,8 @@ class UsageRepository(private val context: Context) {
 
         if (events != null) {
             val event = UsageEvents.Event()
-            val activeResumed = mutableMapOf<String, Long>()
-            var isScreenOn = true
+            var currentForegroundPkg: String? = null
+            var currentForegroundStart: Long = 0L
 
             while (events.hasNextEvent()) {
                 events.getNextEvent(event)
@@ -158,66 +244,69 @@ class UsageRepository(private val context: Context) {
                 val timestamp = event.timeStamp
                 val eventType = event.eventType
 
-                // 1. Process System Unlock & Screen Wake Events (emitted under "android")
+                // 1. Process System Unlock & Screen Wake Events
                 when (eventType) {
-                    18 /* UsageEvents.Event.KEYGUARD_HIDDEN (Unlock) */ -> {
+                    18 /* KEYGUARD_HIDDEN (Unlock) */ -> {
                         if (timestamp in queryStart..queryEnd) {
                             keyguardUnlocks++
                         }
                         continue
                     }
-                    15 /* UsageEvents.Event.SCREEN_INTERACTIVE (Screen Woke Up) */ -> {
+                    15 /* SCREEN_INTERACTIVE (Screen Woke Up) */ -> {
                         if (timestamp in queryStart..queryEnd) {
                             screenInteractiveCount++
                         }
-                        isScreenOn = true
                         continue
                     }
-                    16 /* UsageEvents.Event.SCREEN_NON_INTERACTIVE (Screen Turned Off) */ -> {
-                        isScreenOn = false
-                        // Pause all active foreground sessions
-                        for ((p, resumedAt) in activeResumed) {
-                            recordSession(p, resumedAt, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
+                    16 /* SCREEN_NON_INTERACTIVE (Screen Turned Off) */ -> {
+                        // Pause currently active foreground app
+                        currentForegroundPkg?.let { activePkg ->
+                            if (timestamp > currentForegroundStart) {
+                                recordSession(activePkg, currentForegroundStart, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
+                            }
                         }
-                        activeResumed.clear()
+                        currentForegroundPkg = null
                         continue
                     }
                 }
 
-                // 2. Filter system UI / internals and self from app usage list
+                // 2. Filter system UI / internals and self
                 if (pkg.isEmpty() || pkg == "android" || pkg == "com.android.systemui" || pkg == context.packageName) {
                     continue
                 }
 
-                // 3. Process App transitions
+                // 3. Process App Transitions
                 when (eventType) {
                     UsageEvents.Event.ACTIVITY_RESUMED -> {
-                        if (isScreenOn) {
-                            val prior = activeResumed[pkg]
-                            if (prior != null && timestamp > prior) {
-                                recordSession(pkg, prior, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
+                        // If another app was running, close it first
+                        currentForegroundPkg?.let { activePkg ->
+                            if (timestamp > currentForegroundStart) {
+                                recordSession(activePkg, currentForegroundStart, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
                             }
-                            activeResumed[pkg] = timestamp
-                            if (timestamp in queryStart..queryEnd) {
-                                sessionCount++
-                            }
+                        }
+
+                        currentForegroundPkg = pkg
+                        currentForegroundStart = timestamp
+
+                        if (timestamp in queryStart..queryEnd) {
+                            sessionCount++
                         }
                     }
                     UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> {
-                        val resumedAt = activeResumed.remove(pkg)
-                        if (resumedAt != null && timestamp > resumedAt) {
-                            recordSession(pkg, resumedAt, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
+                        if (currentForegroundPkg == pkg) {
+                            if (timestamp > currentForegroundStart) {
+                                recordSession(pkg, currentForegroundStart, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
+                            }
+                            currentForegroundPkg = null
                         }
                     }
                 }
             }
 
-            // Close any ongoing active session as of queryEnd
-            if (isScreenOn) {
-                for ((p, resumedAt) in activeResumed) {
-                    if (queryEnd > resumedAt) {
-                        recordSession(p, resumedAt, queryEnd, queryStart, queryEnd, appDurations, hourlyDurations)
-                    }
+            // Close session active at queryEnd
+            currentForegroundPkg?.let { activePkg ->
+                if (queryEnd > currentForegroundStart) {
+                    recordSession(activePkg, currentForegroundStart, queryEnd, queryStart, queryEnd, appDurations, hourlyDurations)
                 }
             }
         }
@@ -229,11 +318,9 @@ class UsageRepository(private val context: Context) {
         }
 
         val finalSessions = maxOf(sessionCount, screenInteractiveCount, finalUnlocks)
-
-        // Cap total screen time to the maximum physically elapsed time in this window
-        val maxPossibleDuration = (queryEnd - queryStart).coerceAtLeast(0L)
         val rawTotal = appDurations.values.sum()
-        val finalTotalTime = minOf(rawTotal, maxPossibleDuration)
+        val maxDuration = (queryEnd - queryStart).coerceAtLeast(0L)
+        val finalTotal = minOf(rawTotal, maxDuration)
 
         val maxHourly = hourlyDurations.maxOrNull()?.coerceAtLeast(1L) ?: 1L
         val hourlyList = (0..23).map { h ->
@@ -245,7 +332,7 @@ class UsageRepository(private val context: Context) {
         }
 
         return ProcessedUsage(
-            totalTimeMs = finalTotalTime,
+            totalTimeMs = finalTotal,
             appDurations = appDurations,
             hourlyBuckets = hourlyList,
             unlockCount = finalUnlocks,
@@ -277,7 +364,6 @@ class UsageRepository(private val context: Context) {
                     cal.timeInMillis = current
                     val hour = cal.get(Calendar.HOUR_OF_DAY).coerceIn(0, 23)
 
-                    // End of current hour
                     cal.set(Calendar.MINUTE, 59)
                     cal.set(Calendar.SECOND, 59)
                     cal.set(Calendar.MILLISECOND, 999)
