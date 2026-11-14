@@ -6,9 +6,12 @@ import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.frost.time.data.*
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
@@ -24,22 +27,52 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+    private var foregroundTickerJob: Job? = null
+
     init {
-        loadData()
+        loadData(showLoadingIndicator = true)
+    }
+
+    fun onResume() {
+        // Refresh immediately upon unlocking/returning to app without full screen loading flicker
+        loadData(showLoadingIndicator = false)
+        startForegroundTicker()
+    }
+
+    fun onPause() {
+        // Immediately halt background ticking for 0.0% battery drain
+        stopForegroundTicker()
+    }
+
+    private fun startForegroundTicker() {
+        stopForegroundTicker()
+        foregroundTickerJob = viewModelScope.launch {
+            while (isActive) {
+                delay(30_000L) // Refresh screen time every 30 seconds while screen is actively on
+                loadData(showLoadingIndicator = false)
+            }
+        }
+    }
+
+    private fun stopForegroundTicker() {
+        foregroundTickerJob?.cancel()
+        foregroundTickerJob = null
     }
 
     fun onRangeSelected(range: TimeRange) {
         _selectedRange.value = range
-        loadData()
+        loadData(showLoadingIndicator = false)
     }
 
     fun onSearchQueryChanged(query: String) {
         _searchQuery.value = query
     }
 
-    fun loadData() {
+    fun loadData(showLoadingIndicator: Boolean = false) {
         viewModelScope.launch {
-            _uiState.value = UiState.Loading
+            if (showLoadingIndicator || _uiState.value !is UiState.Success) {
+                _uiState.value = UiState.Loading
+            }
 
             // 1. Verify permissions
             if (!repository.isPermissionGranted()) {
@@ -56,12 +89,14 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             }
 
-            // 2. Fetch screen time stats
+            // 2. Fetch screen time stats on-demand
             try {
                 val data = repository.fetchDashboardData(_selectedRange.value)
                 _uiState.value = UiState.Success(data)
             } catch (e: Exception) {
-                _uiState.value = UiState.Error(e.message ?: "Failed to query usage stats")
+                if (_uiState.value !is UiState.Success) {
+                    _uiState.value = UiState.Error(e.message ?: "Failed to query usage stats")
+                }
             }
         }
     }
@@ -71,7 +106,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             _uiState.value = UiState.Loading
             val success = repository.grantPermissionsWithRoot()
             if (success) {
-                loadData()
+                loadData(showLoadingIndicator = false)
             } else {
                 _uiState.value = UiState.NeedPermission(isRootAvailable = repository.isRootAvailable())
             }
@@ -96,7 +131,12 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             } else {
                 repository.unfreezeApp(packageName)
             }
-            loadData()
+            loadData(showLoadingIndicator = false)
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        stopForegroundTicker()
     }
 }

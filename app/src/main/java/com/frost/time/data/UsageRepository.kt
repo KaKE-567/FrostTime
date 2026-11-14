@@ -186,7 +186,8 @@ class UsageRepository(private val context: Context) {
 
     private fun computeHourlyAndUnlocks(startTime: Long, endTime: Long): Triple<List<HourlyUsage>, Int, Int> {
         val hourlyDurations = LongArray(24) { 0L }
-        var unlocks = 0
+        var keyguardUnlocks = 0
+        var screenInteractiveCount = 0
         var sessions = 0
 
         try {
@@ -200,8 +201,11 @@ class UsageRepository(private val context: Context) {
                 events.getNextEvent(event)
 
                 when (event.eventType) {
-                    15 /* UsageEvents.Event.SCREEN_INTERACTIVE */ -> {
-                        unlocks++
+                    18 /* UsageEvents.Event.KEYGUARD_HIDDEN (Unlock) */ -> {
+                        keyguardUnlocks++
+                    }
+                    15 /* UsageEvents.Event.SCREEN_INTERACTIVE (Screen On) */ -> {
+                        screenInteractiveCount++
                     }
                     UsageEvents.Event.ACTIVITY_RESUMED -> {
                         sessions++
@@ -220,9 +224,21 @@ class UsageRepository(private val context: Context) {
                     }
                 }
             }
+
+            // Account for any active ongoing session that hasn't paused yet
+            if (lastResumedTimestamp > 0 && endTime > lastResumedTimestamp) {
+                val duration = endTime - lastResumedTimestamp
+                if (duration in 1..86_400_000) {
+                    cal.timeInMillis = endTime
+                    val hour = cal.get(Calendar.HOUR_OF_DAY).coerceIn(0, 23)
+                    hourlyDurations[hour] += duration
+                }
+            }
         } catch (e: Exception) {
             // Fallback gracefully
         }
+
+        var unlocks = if (keyguardUnlocks > 0) keyguardUnlocks else screenInteractiveCount
 
         // Try getting unlock count from root if events returned zero
         if (unlocks == 0 && isRootAvailable()) {
