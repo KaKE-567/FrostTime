@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FrostTime</string>
+    <string name="root_status_active">Root Active (Zero Drain)</string>
+    <string name="root_status_inactive">Non-Root (Standard Mode)</string>
+    <string name="grant_permission_hint">Grant Usage Access to view screen time</string>
+</resources>
