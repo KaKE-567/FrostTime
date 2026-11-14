@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import java.util.TimeZone
 
 class DashboardViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -22,9 +23,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     private val _uiState = MutableStateFlow<UiState>(UiState.Loading)
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    val pastDays: List<DayItem> = generatePastDays(count = 30)
-
-    private val _selectedDay = MutableStateFlow(pastDays.last())
+    private val _selectedDay = MutableStateFlow(createTodayItem())
     val selectedDay: StateFlow<DayItem> = _selectedDay.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
@@ -73,6 +72,38 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             stopForegroundTicker()
         }
         loadDataForSelectedDay(showLoadingIndicator = false)
+    }
+
+    fun selectDateFromUtcMillis(utcMillis: Long) {
+        val utcCal = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+            timeInMillis = utcMillis
+        }
+        val year = utcCal.get(Calendar.YEAR)
+        val month = utcCal.get(Calendar.MONTH)
+        val day = utcCal.get(Calendar.DAY_OF_MONTH)
+
+        val localCal = Calendar.getInstance().apply {
+            set(Calendar.YEAR, year)
+            set(Calendar.MONTH, month)
+            set(Calendar.DAY_OF_MONTH, day)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val dayItem = createDayItem(localCal)
+        onDaySelected(dayItem)
+    }
+
+    fun selectToday() {
+        val todayCal = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val dayItem = createDayItem(todayCal)
+        onDaySelected(dayItem)
     }
 
     fun onSearchQueryChanged(query: String) {
@@ -135,8 +166,17 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     companion object {
-        private fun generatePastDays(count: Int = 30): List<DayItem> {
-            val list = mutableListOf<DayItem>()
+        fun createTodayItem(): DayItem {
+            val today = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            return createDayItem(today)
+        }
+
+        fun createDayItem(cal: Calendar): DayItem {
             val today = Calendar.getInstance()
             val todayDay = today.get(Calendar.DAY_OF_YEAR)
             val todayYear = today.get(Calendar.YEAR)
@@ -145,46 +185,33 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             val yestDay = yesterday.get(Calendar.DAY_OF_YEAR)
             val yestYear = yesterday.get(Calendar.YEAR)
 
+            val d = cal.get(Calendar.DAY_OF_YEAR)
+            val y = cal.get(Calendar.YEAR)
+            val isToday = (d == todayDay && y == todayYear)
+            val isYesterday = (d == yestDay && y == yestYear)
+
             val dayFormat = SimpleDateFormat("EEE", Locale.getDefault())
             val monthFormat = SimpleDateFormat("MMM", Locale.getDefault())
 
-            for (i in (count - 1) downTo 0) {
-                val cal = Calendar.getInstance().apply {
-                    add(Calendar.DAY_OF_YEAR, -i)
-                    set(Calendar.HOUR_OF_DAY, 0)
-                    set(Calendar.MINUTE, 0)
-                    set(Calendar.SECOND, 0)
-                    set(Calendar.MILLISECOND, 0)
-                }
+            val dayOfWeek = dayFormat.format(cal.time)
+            val monthName = monthFormat.format(cal.time)
+            val dayOfMonth = cal.get(Calendar.DAY_OF_MONTH)
 
-                val d = cal.get(Calendar.DAY_OF_YEAR)
-                val y = cal.get(Calendar.YEAR)
-                val isToday = (d == todayDay && y == todayYear)
-                val isYesterday = (d == yestDay && y == yestYear)
-
-                val dayOfWeek = dayFormat.format(cal.time)
-                val monthName = monthFormat.format(cal.time)
-                val dayOfMonth = cal.get(Calendar.DAY_OF_MONTH)
-
-                val label = when {
-                    isToday -> "Today"
-                    isYesterday -> "Yesterday"
-                    else -> "$dayOfWeek, $monthName $dayOfMonth"
-                }
-
-                list.add(
-                    DayItem(
-                        timeInMillis = cal.timeInMillis,
-                        dayOfWeek = dayOfWeek,
-                        dayOfMonth = dayOfMonth,
-                        monthName = monthName,
-                        isToday = isToday,
-                        isYesterday = isYesterday,
-                        label = label
-                    )
-                )
+            val label = when {
+                isToday -> "Today"
+                isYesterday -> "Yesterday"
+                else -> "$dayOfWeek, $monthName $dayOfMonth"
             }
-            return list
+
+            return DayItem(
+                timeInMillis = cal.timeInMillis,
+                dayOfWeek = dayOfWeek,
+                dayOfMonth = dayOfMonth,
+                monthName = monthName,
+                isToday = isToday,
+                isYesterday = isYesterday,
+                label = label
+            )
         }
     }
 }
