@@ -232,10 +232,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
                 set(Calendar.MINUTE, 0)
                 set(Calendar.SECOND, 0)
                 set(Calendar.MILLISECOND, 0)
-                set(Calendar.DAY_OF_WEEK, firstDayOfWeek)
-                if (timeInMillis > System.currentTimeMillis()) {
-                    add(Calendar.WEEK_OF_YEAR, -1)
-                }
+                val dow = get(Calendar.DAY_OF_WEEK)
+                val daysSinceMonday = if (dow == Calendar.SUNDAY) 6 else (dow - Calendar.MONDAY)
+                add(Calendar.DAY_OF_YEAR, -daysSinceMonday)
             }
             return DashboardRange(
                 type = RangeType.THIS_WEEK,
