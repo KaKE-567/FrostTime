@@ -71,7 +71,7 @@ class UsageRepository(private val context: Context) {
         rawStatsList: List<UsageStats>
     ): DayProcessedStats {
         val now = System.currentTimeMillis()
-        val effectiveEnd = if (isToday) minOf(now, dayEnd) else dayEnd
+        val effectiveEnd = if (isToday) now else dayEnd
         val calTarget = Calendar.getInstance().apply { timeInMillis = dayStart }
         val targetDay = calTarget.get(Calendar.DAY_OF_YEAR)
         val targetYear = calTarget.get(Calendar.YEAR)
@@ -81,7 +81,7 @@ class UsageRepository(private val context: Context) {
 
         for (stat in rawStatsList) {
             val pkg = stat.packageName ?: continue
-            if (pkg == "android" || pkg == "com.android.systemui" || pkg == context.packageName) continue
+            if (pkg == "android" || pkg == "com.android.systemui") continue
 
             val duration = stat.totalTimeInForeground
             if (duration <= 0) continue
@@ -142,7 +142,7 @@ class UsageRepository(private val context: Context) {
         isToday: Boolean
     ): UsageDashboardData = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
-        val effectiveEnd = if (isToday) minOf(now, endTime) else endTime
+        val effectiveEnd = if (isToday) now else endTime
 
         val todayCal = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0)
@@ -330,8 +330,8 @@ class UsageRepository(private val context: Context) {
                     }
                 }
 
-                // 2. Filter system UI / internals and self
-                if (pkg.isEmpty() || pkg == "android" || pkg == "com.android.systemui" || pkg == context.packageName) {
+                // 2. Filter system UI / internals (only framework and systemui)
+                if (pkg.isEmpty() || pkg == "android" || pkg == "com.android.systemui") {
                     continue
                 }
 

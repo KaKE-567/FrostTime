@@ -38,7 +38,8 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun onResume() {
-        if (_selectedRange.value.isToday) {
+        val range = _selectedRange.value
+        if (range.isToday || range.type == RangeType.THIS_WEEK || range.type == RangeType.THIS_MONTH) {
             loadDataForSelectedRange(showLoadingIndicator = false)
             startForegroundTicker()
         }
@@ -52,8 +53,9 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         stopForegroundTicker()
         foregroundTickerJob = viewModelScope.launch {
             while (isActive) {
-                delay(30_000L) // Refresh every 30 seconds while screen is on
-                if (_selectedRange.value.isToday) {
+                delay(10_000L) // Refresh every 10 seconds while screen is on
+                val range = _selectedRange.value
+                if (range.isToday || range.type == RangeType.THIS_WEEK || range.type == RangeType.THIS_MONTH) {
                     loadDataForSelectedRange(showLoadingIndicator = false)
                 }
             }
@@ -79,13 +81,13 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun selectThisWeek() {
         _selectedRange.value = createThisWeekRange()
-        stopForegroundTicker()
+        startForegroundTicker()
         loadDataForSelectedRange(showLoadingIndicator = false)
     }
 
     fun selectThisMonth() {
         _selectedRange.value = createThisMonthRange()
-        stopForegroundTicker()
+        startForegroundTicker()
         loadDataForSelectedRange(showLoadingIndicator = false)
     }
 
@@ -153,10 +155,17 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             }
 
             val range = _selectedRange.value
+            val currentNow = System.currentTimeMillis()
+            val queryEnd = if (range.isToday || range.type == RangeType.THIS_WEEK || range.type == RangeType.THIS_MONTH) {
+                currentNow
+            } else {
+                range.endTime
+            }
+
             try {
                 val data = repository.fetchDashboardDataForRange(
                     startTime = range.startTime,
-                    endTime = range.endTime,
+                    endTime = queryEnd,
                     isToday = range.isToday
                 )
                 _uiState.value = UiState.Success(data)
