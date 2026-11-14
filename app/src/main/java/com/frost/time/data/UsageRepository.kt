@@ -154,34 +154,43 @@ class UsageRepository(private val context: Context) {
 
             while (events.hasNextEvent()) {
                 events.getNextEvent(event)
-                val pkg = event.packageName ?: continue
+                val pkg = event.packageName ?: ""
                 val timestamp = event.timeStamp
+                val eventType = event.eventType
 
-                // Filter self and system internals
-                if (pkg == "android" || pkg == "com.android.systemui" || pkg == context.packageName) {
-                    continue
-                }
-
-                when (event.eventType) {
-                    18 /* KEYGUARD_HIDDEN (Unlock) */ -> {
+                // 1. Process System Unlock & Screen Wake Events (emitted under "android")
+                when (eventType) {
+                    18 /* UsageEvents.Event.KEYGUARD_HIDDEN (Unlock) */ -> {
                         if (timestamp in queryStart..queryEnd) {
                             keyguardUnlocks++
                         }
+                        continue
                     }
-                    15 /* SCREEN_INTERACTIVE (Screen On) */ -> {
+                    15 /* UsageEvents.Event.SCREEN_INTERACTIVE (Screen Woke Up) */ -> {
                         if (timestamp in queryStart..queryEnd) {
                             screenInteractiveCount++
                         }
                         isScreenOn = true
+                        continue
                     }
-                    16 /* SCREEN_NON_INTERACTIVE (Screen Off) */ -> {
+                    16 /* UsageEvents.Event.SCREEN_NON_INTERACTIVE (Screen Turned Off) */ -> {
                         isScreenOn = false
                         // Pause all active foreground sessions
                         for ((p, resumedAt) in activeResumed) {
                             recordSession(p, resumedAt, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
                         }
                         activeResumed.clear()
+                        continue
                     }
+                }
+
+                // 2. Filter system UI / internals and self from app usage list
+                if (pkg.isEmpty() || pkg == "android" || pkg == "com.android.systemui" || pkg == context.packageName) {
+                    continue
+                }
+
+                // 3. Process App transitions
+                when (eventType) {
                     UsageEvents.Event.ACTIVITY_RESUMED -> {
                         if (isScreenOn) {
                             val prior = activeResumed[pkg]
@@ -213,14 +222,13 @@ class UsageRepository(private val context: Context) {
             }
         }
 
-        var finalUnlocks = if (keyguardUnlocks > 0) keyguardUnlocks else screenInteractiveCount
-        if (finalUnlocks == 0) {
-            try {
-                val out = Shell.cmd("dumpsys power | grep 'mWakefulness=Awake' | wc -l").exec().out
-                val count = out.firstOrNull()?.trim()?.toIntOrNull() ?: 0
-                if (count > 0) finalUnlocks = count
-            } catch (_: Exception) {}
+        val finalUnlocks = when {
+            keyguardUnlocks > 0 -> keyguardUnlocks
+            screenInteractiveCount > 0 -> screenInteractiveCount
+            else -> 0
         }
+
+        val finalSessions = maxOf(sessionCount, screenInteractiveCount, finalUnlocks)
 
         // Cap total screen time to the maximum physically elapsed time in this window
         val maxPossibleDuration = (queryEnd - queryStart).coerceAtLeast(0L)
@@ -241,7 +249,7 @@ class UsageRepository(private val context: Context) {
             appDurations = appDurations,
             hourlyBuckets = hourlyList,
             unlockCount = finalUnlocks,
-            sessionCount = sessionCount
+            sessionCount = finalSessions
         )
     }
 
