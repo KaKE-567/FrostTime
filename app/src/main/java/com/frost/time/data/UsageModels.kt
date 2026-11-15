@@ -37,7 +37,9 @@ enum class TimeRange(val title: String) {
 data class HourlyUsage(
     val hour: Int,
     val durationMs: Long,
-    val percentage: Float
+    val percentage: Float,
+    val unlockCount: Int = 0,
+    val topApps: List<AppUsageInfo> = emptyList()
 )
 
 data class AppUsageInfo(

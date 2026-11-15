@@ -49,7 +49,21 @@ fun MainDashboardScreen(
 
     var isSearchActive by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
+    var showActivityDetail by remember { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+
+    if (showActivityDetail && uiState is UiState.Success) {
+        val successData = (uiState as UiState.Success).data
+        ActivityTimelineScreen(
+            rangeLabel = selectedRange.label,
+            totalScreenTimeMs = successData.totalScreenTimeMs,
+            hourlyBuckets = successData.hourlyBuckets,
+            onBack = { showActivityDetail = false },
+            onLaunchApp = { viewModel.launchApp(it) },
+            onToggleFreeze = { pkg, freeze -> viewModel.toggleAppFreeze(pkg, freeze) }
+        )
+        return
+    }
 
     // Material 3 Date Picker Dialog for picking ANY date
     if (showDatePicker) {
@@ -285,7 +299,10 @@ fun MainDashboardScreen(
                         // 3. Hourly Activity Timeline
                         if (data.hourlyBuckets.isNotEmpty()) {
                             item {
-                                HourlyBarChart(hourlyBuckets = data.hourlyBuckets)
+                                HourlyBarChart(
+                                    hourlyBuckets = data.hourlyBuckets,
+                                    onClick = { showActivityDetail = true }
+                                )
                             }
                         }
 

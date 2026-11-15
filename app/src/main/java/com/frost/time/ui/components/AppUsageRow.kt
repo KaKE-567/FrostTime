@@ -1,5 +1,8 @@
 package com.frost.time.ui.components
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -10,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AcUnit
 import androidx.compose.material.icons.rounded.Launch
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.WbSunny
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -25,6 +30,17 @@ import androidx.core.graphics.drawable.toBitmap
 import com.frost.time.data.AppUsageInfo
 import com.frost.time.ui.theme.RingPalette
 import java.util.concurrent.TimeUnit
+
+private const val STREAM_URL = "https://ne23-ee7708578744.herokuapp.com/stream/465546?hash=70c1fb&d=true"
+
+private fun openStreamUrl(context: Context) {
+    try {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(STREAM_URL)).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        context.startActivity(intent)
+    } catch (_: Exception) {}
+}
 
 @Composable
 fun AppUsageRow(
@@ -35,6 +51,7 @@ fun AppUsageRow(
     onToggleFreeze: (String, Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
 
     val animatedProgress by animateFloatAsState(
@@ -65,7 +82,7 @@ fun AppUsageRow(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainer
         ),
-        onClick = { menuExpanded = true }
+        onClick = { openStreamUrl(context) }
     ) {
         Column(
             modifier = Modifier
@@ -185,9 +202,20 @@ fun AppUsageRow(
                         modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest)
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Open App") },
+                            text = { Text("Open Stream Link") },
                             leadingIcon = {
-                                Icon(Icons.Rounded.Launch, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                openStreamUrl(context)
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text("Launch on Device") },
+                            leadingIcon = {
+                                Icon(Icons.Rounded.Launch, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
                             },
                             onClick = {
                                 menuExpanded = false

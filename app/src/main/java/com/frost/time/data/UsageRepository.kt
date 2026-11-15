@@ -176,6 +176,8 @@ class UsageRepository(private val context: Context) {
             finalHourlyBuckets = dayStats.hourlyBuckets
         } else {
             val hourlyAgg = LongArray(24) { 0L }
+            val hourlyUnlocksAgg = IntArray(24) { 0 }
+            val hourlyAppsAgg = Array(24) { mutableMapOf<String, Long>() }
             val dayIter = Calendar.getInstance().apply { timeInMillis = startTime }
 
             while (dayIter.timeInMillis <= effectiveEnd) {
@@ -193,6 +195,11 @@ class UsageRepository(private val context: Context) {
                 for (bucket in dayStats.hourlyBuckets) {
                     if (bucket.hour in 0..23) {
                         hourlyAgg[bucket.hour] += bucket.durationMs
+                        hourlyUnlocksAgg[bucket.hour] += bucket.unlockCount
+                        for (app in bucket.topApps) {
+                            val map = hourlyAppsAgg[bucket.hour]
+                            map[app.packageName] = (map[app.packageName] ?: 0L) + app.durationMs
+                        }
                     }
                 }
 
@@ -201,10 +208,38 @@ class UsageRepository(private val context: Context) {
 
             val maxHour = hourlyAgg.maxOrNull()?.coerceAtLeast(1L) ?: 1L
             finalHourlyBuckets = (0..23).map { hour ->
+                val hourApps = hourlyAppsAgg[hour].entries
+                    .sortedByDescending { it.value }
+                    .mapNotNull { (pkg, dur) ->
+                        if (dur < 2_000L) null
+                        else {
+                            var appName = pkg
+                            var isSystem = false
+                            val icon = try {
+                                val appInfo = packageManager.getApplicationInfo(pkg, 0)
+                                appName = packageManager.getApplicationLabel(appInfo).toString()
+                                isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                                packageManager.getApplicationIcon(appInfo)
+                            } catch (e: Exception) {
+                                null
+                            }
+                            AppUsageInfo(
+                                packageName = pkg,
+                                appName = appName,
+                                icon = icon,
+                                durationMs = dur,
+                                percentage = if (hourlyAgg[hour] > 0) (dur.toFloat() / hourlyAgg[hour].toFloat()) else 0f,
+                                isSystemApp = isSystem
+                            )
+                        }
+                    }
+
                 HourlyUsage(
                     hour = hour,
                     durationMs = hourlyAgg[hour],
-                    percentage = (hourlyAgg[hour].toFloat() / maxHour.toFloat()).coerceIn(0f, 1f)
+                    percentage = (hourlyAgg[hour].toFloat() / maxHour.toFloat()).coerceIn(0f, 1f),
+                    unlockCount = hourlyUnlocksAgg[hour],
+                    topApps = hourApps
                 )
             }
         }
@@ -282,6 +317,8 @@ class UsageRepository(private val context: Context) {
     private fun processEventsForRange(queryStart: Long, queryEnd: Long): ProcessedUsage {
         val appDurations = mutableMapOf<String, Long>()
         val hourlyDurations = LongArray(24) { 0L }
+        val hourlyAppDurations = Array(24) { mutableMapOf<String, Long>() }
+        val hourlyUnlocks = IntArray(24) { 0 }
         var keyguardUnlocks = 0
         var screenInteractiveCount = 0
         var sessionCount = 0
@@ -310,6 +347,9 @@ class UsageRepository(private val context: Context) {
                     18 /* KEYGUARD_HIDDEN (Unlock) */ -> {
                         if (timestamp in queryStart..queryEnd) {
                             keyguardUnlocks++
+                            val calU = Calendar.getInstance().apply { timeInMillis = timestamp }
+                            val h = calU.get(Calendar.HOUR_OF_DAY).coerceIn(0, 23)
+                            hourlyUnlocks[h]++
                         }
                         continue
                     }
@@ -322,7 +362,7 @@ class UsageRepository(private val context: Context) {
                     16 /* SCREEN_NON_INTERACTIVE (Screen Turned Off) */ -> {
                         currentForegroundPkg?.let { activePkg ->
                             if (timestamp > currentForegroundStart) {
-                                recordSession(activePkg, currentForegroundStart, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
+                                recordSession(activePkg, currentForegroundStart, timestamp, queryStart, queryEnd, appDurations, hourlyDurations, hourlyAppDurations)
                             }
                         }
                         currentForegroundPkg = null
@@ -340,7 +380,7 @@ class UsageRepository(private val context: Context) {
                     UsageEvents.Event.ACTIVITY_RESUMED -> {
                         currentForegroundPkg?.let { activePkg ->
                             if (timestamp > currentForegroundStart) {
-                                recordSession(activePkg, currentForegroundStart, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
+                                recordSession(activePkg, currentForegroundStart, timestamp, queryStart, queryEnd, appDurations, hourlyDurations, hourlyAppDurations)
                             }
                         }
 
@@ -354,7 +394,7 @@ class UsageRepository(private val context: Context) {
                     UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> {
                         if (currentForegroundPkg == pkg) {
                             if (timestamp > currentForegroundStart) {
-                                recordSession(pkg, currentForegroundStart, timestamp, queryStart, queryEnd, appDurations, hourlyDurations)
+                                recordSession(pkg, currentForegroundStart, timestamp, queryStart, queryEnd, appDurations, hourlyDurations, hourlyAppDurations)
                             }
                             currentForegroundPkg = null
                         }
@@ -365,7 +405,7 @@ class UsageRepository(private val context: Context) {
             // Close session active at queryEnd
             currentForegroundPkg?.let { activePkg ->
                 if (queryEnd > currentForegroundStart) {
-                    recordSession(activePkg, currentForegroundStart, queryEnd, queryStart, queryEnd, appDurations, hourlyDurations)
+                    recordSession(activePkg, currentForegroundStart, queryEnd, queryStart, queryEnd, appDurations, hourlyDurations, hourlyAppDurations)
                 }
             }
         }
@@ -383,10 +423,38 @@ class UsageRepository(private val context: Context) {
 
         val maxHourly = hourlyDurations.maxOrNull()?.coerceAtLeast(1L) ?: 1L
         val hourlyList = (0..23).map { h ->
+            val hourApps = hourlyAppDurations[h].entries
+                .sortedByDescending { it.value }
+                .mapNotNull { (pkg, dur) ->
+                    if (dur < 2_000L) null
+                    else {
+                        var appName = pkg
+                        var isSystem = false
+                        val icon = try {
+                            val appInfo = packageManager.getApplicationInfo(pkg, 0)
+                            appName = packageManager.getApplicationLabel(appInfo).toString()
+                            isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                            packageManager.getApplicationIcon(appInfo)
+                        } catch (e: Exception) {
+                            null
+                        }
+                        AppUsageInfo(
+                            packageName = pkg,
+                            appName = appName,
+                            icon = icon,
+                            durationMs = dur,
+                            percentage = if (hourlyDurations[h] > 0) (dur.toFloat() / hourlyDurations[h].toFloat()) else 0f,
+                            isSystemApp = isSystem
+                        )
+                    }
+                }
+
             HourlyUsage(
                 hour = h,
                 durationMs = hourlyDurations[h],
-                percentage = (hourlyDurations[h].toFloat() / maxHourly.toFloat()).coerceIn(0f, 1f)
+                percentage = (hourlyDurations[h].toFloat() / maxHourly.toFloat()).coerceIn(0f, 1f),
+                unlockCount = hourlyUnlocks[h],
+                topApps = hourApps
             )
         }
 
@@ -406,7 +474,8 @@ class UsageRepository(private val context: Context) {
         queryStart: Long,
         queryEnd: Long,
         appDurations: MutableMap<String, Long>,
-        hourlyDurations: LongArray
+        hourlyDurations: LongArray,
+        hourlyAppDurations: Array<MutableMap<String, Long>>
     ) {
         val clampedStart = maxOf(sessionStart, queryStart)
         val clampedEnd = minOf(sessionEnd, queryEnd)
@@ -431,6 +500,8 @@ class UsageRepository(private val context: Context) {
                     val chunk = chunkEnd - current
                     if (chunk > 0) {
                         hourlyDurations[hour] += chunk
+                        val map = hourlyAppDurations[hour]
+                        map[packageName] = (map[packageName] ?: 0L) + chunk
                     }
                     current = chunkEnd
                 }
