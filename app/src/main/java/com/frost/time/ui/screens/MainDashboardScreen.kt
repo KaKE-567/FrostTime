@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.frost.time.data.AppUsageInfo
 import com.frost.time.data.DashboardRange
 import com.frost.time.data.RangeType
 import com.frost.time.data.UiState
@@ -50,7 +51,25 @@ fun MainDashboardScreen(
     var isSearchActive by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showActivityDetail by remember { mutableStateOf(false) }
+    var selectedAppForDetail by remember { mutableStateOf<AppUsageInfo?>(null) }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+
+    if (selectedAppForDetail != null && uiState is UiState.Success) {
+        val successData = (uiState as UiState.Success).data
+        AppDetailScreen(
+            appInfo = selectedAppForDetail!!,
+            rangeLabel = selectedRange.label,
+            totalScreenTimeMs = successData.totalScreenTimeMs,
+            hourlyBuckets = successData.hourlyBuckets,
+            onBack = { selectedAppForDetail = null },
+            onLaunchApp = { viewModel.launchApp(it) },
+            onToggleFreeze = { pkg, freeze ->
+                viewModel.toggleAppFreeze(pkg, freeze)
+                selectedAppForDetail = selectedAppForDetail?.copy(isSuspended = freeze)
+            }
+        )
+        return
+    }
 
     if (showActivityDetail && uiState is UiState.Success) {
         val successData = (uiState as UiState.Success).data
@@ -336,6 +355,7 @@ fun MainDashboardScreen(
                                 item = appItem,
                                 index = index,
                                 isRootActive = true,
+                                onAppClick = { selectedAppForDetail = it },
                                 onLaunchApp = { viewModel.launchApp(it) },
                                 onToggleFreeze = { pkg, freeze -> viewModel.toggleAppFreeze(pkg, freeze) }
                             )

@@ -49,7 +49,8 @@ data class AppUsageInfo(
     val durationMs: Long,
     val percentage: Float,
     val isSystemApp: Boolean = false,
-    val isSuspended: Boolean = false
+    val isSuspended: Boolean = false,
+    val launchCount: Int = 0
 )
 
 data class UsageDashboardData(

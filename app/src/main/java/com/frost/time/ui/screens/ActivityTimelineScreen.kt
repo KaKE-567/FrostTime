@@ -1,8 +1,5 @@
 package com.frost.time.ui.screens
 
-import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
@@ -32,11 +29,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.frost.time.data.AppUsageInfo
 import com.frost.time.data.HourlyUsage
 import com.frost.time.ui.components.AppUsageRow
 import java.util.concurrent.TimeUnit
-
-private const val STREAM_URL = "https://ne23-ee7708578744.herokuapp.com/stream/465546?hash=70c1fb&d=true"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -51,6 +47,24 @@ fun ActivityTimelineScreen(
 ) {
     BackHandler { onBack() }
     val context = LocalContext.current
+
+    var selectedAppForDetail by remember { mutableStateOf<AppUsageInfo?>(null) }
+
+    if (selectedAppForDetail != null) {
+        AppDetailScreen(
+            appInfo = selectedAppForDetail!!,
+            rangeLabel = rangeLabel,
+            totalScreenTimeMs = totalScreenTimeMs,
+            hourlyBuckets = hourlyBuckets,
+            onBack = { selectedAppForDetail = null },
+            onLaunchApp = onLaunchApp,
+            onToggleFreeze = { pkg, freeze ->
+                onToggleFreeze(pkg, freeze)
+                selectedAppForDetail = selectedAppForDetail?.copy(isSuspended = freeze)
+            }
+        )
+        return
+    }
 
     val peakBucket = remember(hourlyBuckets) { hourlyBuckets.maxByOrNull { it.durationMs } }
     val initialHour = peakBucket?.hour ?: 12
@@ -450,6 +464,7 @@ fun ActivityTimelineScreen(
                         item = appItem,
                         index = index,
                         isRootActive = true,
+                        onAppClick = { selectedAppForDetail = it },
                         onLaunchApp = onLaunchApp,
                         onToggleFreeze = onToggleFreeze
                     )
@@ -461,15 +476,6 @@ fun ActivityTimelineScreen(
             }
         }
     }
-}
-
-private fun openStreamUrl(context: Context) {
-    try {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(STREAM_URL)).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        context.startActivity(intent)
-    } catch (_: Exception) {}
 }
 
 private fun formatHourLabel(hour: Int): String {

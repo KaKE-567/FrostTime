@@ -61,7 +61,8 @@ class UsageRepository(private val context: Context) {
         val durations: Map<String, Long>,
         val unlockCount: Int,
         val sessionCount: Int,
-        val hourlyBuckets: List<HourlyUsage>
+        val hourlyBuckets: List<HourlyUsage>,
+        val appLaunchCounts: Map<String, Int> = emptyMap()
     )
 
     private fun computeSingleDayStats(
@@ -129,7 +130,8 @@ class UsageRepository(private val context: Context) {
             durations = dayDurations,
             unlockCount = eventProcessed.unlockCount,
             sessionCount = eventProcessed.sessionCount,
-            hourlyBuckets = eventProcessed.hourlyBuckets
+            hourlyBuckets = eventProcessed.hourlyBuckets,
+            appLaunchCounts = eventProcessed.appLaunchCounts
         )
     }
 
@@ -164,6 +166,7 @@ class UsageRepository(private val context: Context) {
         }
 
         val mergedDurations = mutableMapOf<String, Long>()
+        val mergedLaunchCounts = mutableMapOf<String, Int>()
         var totalUnlocks = 0
         var totalSessions = 0
         val finalHourlyBuckets: List<HourlyUsage>
@@ -171,6 +174,7 @@ class UsageRepository(private val context: Context) {
         if (!isMultiDay) {
             val dayStats = computeSingleDayStats(startTime, effectiveEnd, isToday, rawStatsList)
             mergedDurations.putAll(dayStats.durations)
+            mergedLaunchCounts.putAll(dayStats.appLaunchCounts)
             totalUnlocks = dayStats.unlockCount
             totalSessions = dayStats.sessionCount
             finalHourlyBuckets = dayStats.hourlyBuckets
@@ -189,6 +193,9 @@ class UsageRepository(private val context: Context) {
                 val dayStats = computeSingleDayStats(dStart, dEnd, isDayToday, rawStatsList)
                 for ((pkg, timeMs) in dayStats.durations) {
                     mergedDurations[pkg] = (mergedDurations[pkg] ?: 0L) + timeMs
+                }
+                for ((pkg, count) in dayStats.appLaunchCounts) {
+                    mergedLaunchCounts[pkg] = (mergedLaunchCounts[pkg] ?: 0) + count
                 }
                 totalUnlocks += dayStats.unlockCount
                 totalSessions += dayStats.sessionCount
@@ -211,7 +218,7 @@ class UsageRepository(private val context: Context) {
                 val hourApps = hourlyAppsAgg[hour].entries
                     .sortedByDescending { it.value }
                     .mapNotNull { (pkg, dur) ->
-                        if (dur < 2_000L) null
+                        if (dur <= 0L) null
                         else {
                             var appName = pkg
                             var isSystem = false
@@ -229,7 +236,8 @@ class UsageRepository(private val context: Context) {
                                 icon = icon,
                                 durationMs = dur,
                                 percentage = if (hourlyAgg[hour] > 0) (dur.toFloat() / hourlyAgg[hour].toFloat()) else 0f,
-                                isSystemApp = isSystem
+                                isSystemApp = isSystem,
+                                launchCount = 0
                             )
                         }
                     }
@@ -273,7 +281,8 @@ class UsageRepository(private val context: Context) {
                     durationMs = timeMs,
                     percentage = 0f,
                     isSystemApp = isSystem,
-                    isSuspended = isSuspended
+                    isSuspended = isSuspended,
+                    launchCount = mergedLaunchCounts[pkg] ?: 0
                 )
             )
         }
@@ -311,7 +320,8 @@ class UsageRepository(private val context: Context) {
         val appDurations: Map<String, Long>,
         val hourlyBuckets: List<HourlyUsage>,
         val unlockCount: Int,
-        val sessionCount: Int
+        val sessionCount: Int,
+        val appLaunchCounts: Map<String, Int> = emptyMap()
     )
 
     private fun processEventsForRange(queryStart: Long, queryEnd: Long): ProcessedUsage {
@@ -319,6 +329,7 @@ class UsageRepository(private val context: Context) {
         val hourlyDurations = LongArray(24) { 0L }
         val hourlyAppDurations = Array(24) { mutableMapOf<String, Long>() }
         val hourlyUnlocks = IntArray(24) { 0 }
+        val appLaunchCounts = mutableMapOf<String, Int>()
         var keyguardUnlocks = 0
         var screenInteractiveCount = 0
         var sessionCount = 0
@@ -389,6 +400,7 @@ class UsageRepository(private val context: Context) {
 
                         if (timestamp in queryStart..queryEnd) {
                             sessionCount++
+                            appLaunchCounts[pkg] = (appLaunchCounts[pkg] ?: 0) + 1
                         }
                     }
                     UsageEvents.Event.ACTIVITY_PAUSED, UsageEvents.Event.ACTIVITY_STOPPED -> {
@@ -426,7 +438,7 @@ class UsageRepository(private val context: Context) {
             val hourApps = hourlyAppDurations[h].entries
                 .sortedByDescending { it.value }
                 .mapNotNull { (pkg, dur) ->
-                    if (dur < 2_000L) null
+                    if (dur <= 0L) null
                     else {
                         var appName = pkg
                         var isSystem = false
@@ -444,7 +456,8 @@ class UsageRepository(private val context: Context) {
                             icon = icon,
                             durationMs = dur,
                             percentage = if (hourlyDurations[h] > 0) (dur.toFloat() / hourlyDurations[h].toFloat()) else 0f,
-                            isSystemApp = isSystem
+                            isSystemApp = isSystem,
+                            launchCount = 0
                         )
                     }
                 }
@@ -463,7 +476,8 @@ class UsageRepository(private val context: Context) {
             appDurations = appDurations,
             hourlyBuckets = hourlyList,
             unlockCount = finalUnlocks,
-            sessionCount = finalSessions
+            sessionCount = finalSessions,
+            appLaunchCounts = appLaunchCounts
         )
     }
 
